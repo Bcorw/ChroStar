@@ -4,6 +4,7 @@ import android.content.ContentProvider;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.Bundle;
 import android.database.Cursor;
 import android.database.MatrixCursor;
 import android.net.Uri;
@@ -47,6 +48,28 @@ public final class ConfigProvider extends ContentProvider {
             }
         }
         return cursor;
+    }
+
+    @Override
+    public Bundle call(String method, String arg, Bundle extras) {
+        Bundle result = new Bundle();
+        if ("hide_icon".equals(method)) {
+            Context ctx = getContext();
+            boolean ok = ctx != null && HideIcon.apply(ctx, "1".equals(arg));
+            result.putBoolean("ok", ok);
+        } else if ("sync_hide_icon".equals(method)) {
+            // 由 Chrome 进程在每次启动时调用: 模块被覆盖安装后系统会重置
+            // activity-alias 的 enabled 状态, 这里在模块进程内按 prefs 重新应用。
+            Context ctx = getContext();
+            if (ctx != null) {
+                SharedPreferences prefs = ctx.getSharedPreferences(
+                        HookEntry.PREFS_NAME, Context.MODE_PRIVATE);
+                if (prefs.getBoolean("hide_icon", false)) {
+                    result.putBoolean("ok", HideIcon.apply(ctx, true));
+                }
+            }
+        }
+        return result;
     }
 
     @Override

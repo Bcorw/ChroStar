@@ -11,14 +11,16 @@ android {
         applicationId "io.github.ylw6669.chrostar"
         minSdk 33
         targetSdk 35
-        versionCode 79
-        versionName "2.2.1"
+        versionCode 81
+        versionName "2.3.1"
     }
 
     buildTypes {
         release {
             minifyEnabled true
             shrinkResources true
+            // 与 debug 使用同一签名, 便于 LSPosed 覆盖安装更新
+            signingConfig signingConfigs.debug
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }

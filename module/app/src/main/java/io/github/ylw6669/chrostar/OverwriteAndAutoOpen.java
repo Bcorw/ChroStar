@@ -8,7 +8,6 @@ import android.os.Looper;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
-import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 import java.io.File;
 import java.util.HashMap;
@@ -34,7 +33,7 @@ public final class OverwriteAndAutoOpen {
     // hook DuplicateDownloadDialogBridge(公开类, 145/152 同名) 的确认回调,
     // 在用户选择"下载"(allow)时, 把旧文件移到 .chrostar-bak, 让 Chrome 拿回原名。
     // ------------------------------------------------------------------
-        public static void hookOverwriteDuplicate(XC_LoadPackage.LoadPackageParam lpparam) {
+        public static void hookOverwriteDuplicate(ClassLoader cl) {
         // v2.2.0: 备份动作由 DownloadSafetyBypass.hookDuplicate 的确认点调用 armBackup()。
         // 这里仅做 hook 安装标记, 保证 LSPosed 日志可见。
         XposedBridge.log(HookEntry.TAG + ": overwrite-duplicate armed (via duplicate dialog confirm)");

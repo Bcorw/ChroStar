@@ -15,3 +15,9 @@ local.properties
 .gradle/
 .idea/
 *.iml
+
+# 本次 156 适配工作目录(APK/反编译/截图)
+_work/
+
+# Release APK (作为 GitHub Release 附件, 不提交进 Git)
+ChroStar-*.apk

@@ -7,7 +7,6 @@ import android.os.Looper;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
-import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
@@ -29,18 +28,32 @@ import java.util.List;
  */
 public final class HomeCleaner {
 
-    private static String CLS_SELECTOR() { return "chrome152".equals(HookEntry.engineVersion) ? "k3r" : "tuo"; }   // TabModelSelector(根包)
-    private static String CLS_HOME_MGR() { return "chrome152".equals(HookEntry.engineVersion) ? "w5c" : "jza"; }   // HomepageManager(根包)
-    private static String CLS_MENU_RUNNABLE() { return "chrome152".equals(HookEntry.engineVersion) ? "q35" : "id4"; } // 菜单关闭 Runnable(根包)
+    private static String CLS_SELECTOR() {
+        if (HookEntry.is156()) return Chrome156.SELECTOR;     // zor
+        return HookEntry.is152() ? "k3r" : "tuo";             // TabModelSelector(根包)
+    }
+    private static String CLS_HOME_MGR() {
+        if (HookEntry.is156()) return Chrome156.HOME_MGR;     // sgc
+        return HookEntry.is152() ? "w5c" : "jza";             // HomepageManager(根包)
+    }
+    private static String CLS_MENU_RUNNABLE() {
+        if (HookEntry.is156()) return "q35";                  // 156 不走菜单路径, 仅占位
+        return HookEntry.is152() ? "q35" : "id4";
+    }
     private static final String CLS_TAB_MODEL_JNI_BRIDGE =
             "org.chromium.chrome.browser.tabmodel.TabModelJniBridge";
     private static final String CLS_GURL = "org.chromium.url.GURL";
     private static final String CLS_PROFILE_MANAGER =
             "org.chromium.chrome.browser.profiles.ProfileManager";
+    private static final String CLS_PROFILE =
+            "org.chromium.chrome.browser.profiles.Profile";
+    private static final String CLS_RECENTLY_CLOSED =
+            "org.chromium.chrome.browser.ntp.RecentlyClosedBridge";
     private static final String DEFAULT_NTP = "chrome-native://newtab/";
 
     private static final int BROWSING_DATA_TYPE_TABS = 8;
-    private static final int METHOD_ID_REMOVE_BROWSING_DATA = 0;
+    private static final int METHOD_ID_REMOVE_BROWSING_DATA = 0;      // 145
+    private static final int METHOD_ID_REMOVE_BROWSING_DATA_V156 = 4; // 156
     private static final int MAX_CLEAR_ATTEMPTS = 4;
     private static final int MAX_COLD_ROUNDS = 4;
 
@@ -211,9 +224,9 @@ public final class HomeCleaner {
     // 参数[1]=GURL), 当 URL 是 NTP 且开关开时替换为主页 URL。
     // target=_blank 等具体 URL 不是 NTP, 不受影响。
     // ------------------------------------------------------------------
-    public static void hookOpenNewTab(XC_LoadPackage.LoadPackageParam lpparam) {
-        hookTabCreator(lpparam);
-        hookOpenNewTabJni(lpparam);
+    public static void hookOpenNewTab(ClassLoader cl) {
+        hookTabCreator(cl);
+        hookOpenNewTabJni(cl);
     }
 
     // ------------------------------------------------------------------
@@ -221,13 +234,22 @@ public final class HomeCleaner {
     // + 号按钮的真实路径(TraceEvent "ChromeTabCreator.createNewTab" 实锤),
     // LoadUrlParams.a = URL字符串(保留名字段), 是 NTP 且开关开时直接替换。
     // ------------------------------------------------------------------
-    private static void hookTabCreator(XC_LoadPackage.LoadPackageParam lpparam) {
-        // v2.1.0: 152 用 iq4.m, 145 用 l04.l
-        boolean is152 = "chrome152".equals(HookEntry.engineVersion);
-        String creatorCls = is152 ? "iq4" : "l04";
-        String creatorMethod = is152 ? "m" : "l";
+    private static void hookTabCreator(ClassLoader cl) {
+        // v2.3.0: 156 用 ju4.m, 152 用 iq4.m, 145 用 l04.l
+        String creatorCls;
+        String creatorMethod;
+        if (HookEntry.is156()) {
+            creatorCls = Chrome156.TAB_CREATOR; // ju4
+            creatorMethod = "m";
+        } else if (HookEntry.is152()) {
+            creatorCls = "iq4";
+            creatorMethod = "m";
+        } else {
+            creatorCls = "l04";
+            creatorMethod = "l";
+        }
         try {
-            Class<?> l04 = XposedHelpers.findClass(creatorCls, lpparam.classLoader);
+            Class<?> l04 = XposedHelpers.findClass(creatorCls, cl);
             // hookAllMethods 覆盖所有重载, 仅当 args[0] 是 LoadUrlParams 才处理。
             XposedBridge.hookAllMethods(l04, creatorMethod, new XC_MethodHook() {
                 @Override
@@ -251,6 +273,15 @@ public final class HomeCleaner {
                                 + ": l04.l called, sw=" + sw + ", url=" + spec);
                         if (!sw) return;
                         if (spec == null || !isNtp(spec)) return;
+                        // 156 冷启动保护: 启动初期 launcher 创建的首个 NTP 不替换,
+                        // 交由 coldStartCleanup 在 2s 后用 TabModel 打开主页。
+                        if (HookEntry.is156()
+                                && System.currentTimeMillis() < HookEntry.sColdStartProtectUntil) {
+                            XposedBridge.log(HookEntry.TAG
+                                    + ": [156] cold-start window: keep initial NTP, "
+                                    + "home tab will be opened by cleanup");
+                            return;
+                        }
                         String home = resolveHomeUrl(
                                 param.thisObject.getClass().getClassLoader());
                         if (home == null || home.isEmpty() || isNtp(home)) return;
@@ -271,10 +302,9 @@ public final class HomeCleaner {
     }
 
     // 兼容旧入口(TabModelJniBridge.openNewTab, target=_blank 等)
-    private static void hookOpenNewTabJni(XC_LoadPackage.LoadPackageParam lpparam) {
+    private static void hookOpenNewTabJni(ClassLoader cl) {
         try {
-            Class<?> bridge = XposedHelpers.findClass(CLS_TAB_MODEL_JNI_BRIDGE,
-                    lpparam.classLoader);
+            Class<?> bridge = XposedHelpers.findClass(CLS_TAB_MODEL_JNI_BRIDGE, cl);
             XposedBridge.hookAllMethods(bridge, "openNewTab", new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
@@ -325,7 +355,7 @@ public final class HomeCleaner {
     // ---- 精确路径(根包类名) ----
 
     /** 找 TabModelSelector(根包 tuo): 精确 Class.forName + activity 字段扫描 */
-    private static Object findTabModelSelector(Activity activity) {
+    static Object findTabModelSelector(Activity activity) {
         try {
             Class<?> selectorClass = Class.forName(CLS_SELECTOR(), false,
                     activity.getClass().getClassLoader());
@@ -368,15 +398,16 @@ public final class HomeCleaner {
         return null;
     }
 
-    /** 常规模型: selector.l(false)(根包方法名) */
+    /** 常规模型: 156=selector.k(false); 152/145=selector.l(false) */
     private static Object getRegularModel(Object selector) {
+        String name = HookEntry.is156() ? "k" : "l";
         try {
-            Object m = XposedHelpers.callMethod(selector, "l", Boolean.FALSE);
+            Object m = XposedHelpers.callMethod(selector, name, Boolean.FALSE);
             if (m != null) {
                 return m;
             }
         } catch (Throwable t) {
-            XposedBridge.log(HookEntry.TAG + ": selector.l(false) failed -> " + t);
+            XposedBridge.log(HookEntry.TAG + ": selector." + name + "(false) failed -> " + t);
         }
         return getRegularModelByMemory();
     }
@@ -391,14 +422,16 @@ public final class HomeCleaner {
         return null;
     }
 
-    /** 主页 URL: home_url 配置 → 根包 jza(主页管理器).d().b(false) → NTP */
+    /** 主页 URL: 156=sgc.d().b(false,false); 152/145=主页管理器.d().b(false) → NTP */
     private static String resolveHomeUrl(ClassLoader cl) {
         // v1.9.5: 自定义主页已删除, 直接跟随 Chrome 设置主页 / 默认新标签页
         try {
             Class<?> jzaClass = Class.forName(CLS_HOME_MGR(), false, cl);
             Object singleton = XposedHelpers.callStaticMethod(jzaClass, "d");
             if (singleton != null) {
-                Object gurl = XposedHelpers.callMethod(singleton, "b", Boolean.FALSE);
+                Object gurl = HookEntry.is156()
+                        ? XposedHelpers.callMethod(singleton, "b", Boolean.FALSE, Boolean.FALSE)
+                        : XposedHelpers.callMethod(singleton, "b", Boolean.FALSE);
                 if (gurl != null) {
                     Object urlText = XposedHelpers.getObjectField(gurl, "a");
                     if (urlText instanceof String && !((String) urlText).isEmpty()) {
@@ -407,15 +440,15 @@ public final class HomeCleaner {
                 }
             }
         } catch (Throwable t) {
-            XposedBridge.log(HookEntry.TAG + ": resolveHomeUrl(jza) failed -> " + t);
+            XposedBridge.log(HookEntry.TAG + ": resolveHomeUrl(" + CLS_HOME_MGR() + ") failed -> " + t);
         }
         return DEFAULT_NTP;
     }
 
     /** 菜单「关闭所有标签页」原始路径: 根包 id4(O=selector,P=false,Q=false).run() → jd4.a */
     private static void menuCloseAllTabs(Object selector, ClassLoader cl) {
-        // v2.1.0: 152 无 id4(类职责已换), 直接遍历记忆模型关闭全部
-        if ("chrome152".equals(HookEntry.engineVersion)) {
+        // v2.1.0/2.3.0: 152/156 无 id4(类职责已换), 直接遍历记忆模型关闭全部
+        if (HookEntry.is156() || HookEntry.is152()) {
             int closed = 0;
             for (Object model : getModels()) {
                 try {
@@ -428,10 +461,10 @@ public final class HomeCleaner {
                         }
                     }
                 } catch (Throwable t) {
-                    XposedBridge.log(HookEntry.TAG + ": [152] close model failed -> " + t);
+                    XposedBridge.log(HookEntry.TAG + ": [model] close model failed -> " + t);
                 }
             }
-            XposedBridge.log(HookEntry.TAG + ": [152] close-all done, closed=" + closed);
+            XposedBridge.log(HookEntry.TAG + ": [model] close-all done, closed=" + closed);
             return;
         }
         try {
@@ -454,19 +487,18 @@ public final class HomeCleaner {
         }
     }
 
-    /** 原生删除「关闭的标签页」: J.N.VIOOOOOOO(0, period, profile, null, {8}, ...) */
+    /** 原生删除「关闭的标签页」(156: J.N.VIOOOOO(4, profile, null, {8}, [], []); 145: 旧通道) */
     private static void clearClosedTabs(final Activity activity, final ClassLoader cl,
                                         final int attempt) {
         try {
             if (!HookEntry.readPrefBoolean(HookEntry.KEY_CLEAR_TABS, true)) {
                 return;
             }
-            // v2.1.0: 152 无 VIOOOOOOO 等价 selector(通道重构), 语义降级跳过; 145 不受影响
-            if ("chrome152".equals(HookEntry.engineVersion)) {
+            // v2.1.0: 152 通道重构后无等价 selector, 语义降级跳过; 156/145 不受影响
+            if (HookEntry.is152()) {
                 XposedBridge.log(HookEntry.TAG + ": 152 clearClosedTabs skipped (semantic channel changed)");
                 return;
             }
-            int period = 4; // 全部时间(v1.9.5 起固定, 原 mapDaysToPeriod(0)=4)
             Class<?> pmClass = Class.forName(CLS_PROFILE_MANAGER, false, cl);
             Method pmB = pmClass.getMethod("b");
             Object profile = pmB.invoke(null);
@@ -486,6 +518,65 @@ public final class HomeCleaner {
                 return;
             }
             Class<?> nClass = Class.forName(HookEntry.CLS_J_N, false, cl);
+            if (HookEntry.is156()) {
+                // 156 不能用 BrowsingData VIOOOOO(...,{8},...)(会连当前标签一起清掉)。
+                // 改走 RecentlyClosedBridge: ZIJO(0,25,ptr,list) 取回最近关闭条目,
+                // VIJ(20,count,ptr) 删除末尾 count 条(Chrome 自己清理 180 天前条目用的通道)。
+                Object selector = findTabModelSelector(activity);
+                if (selector == null) {
+                    XposedBridge.log(HookEntry.TAG
+                            + ": [156] recently-closed: selector not ready (attempt " + attempt + ")");
+                    if (attempt < MAX_CLEAR_ATTEMPTS) {
+                        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (activity.isFinishing() || activity.isDestroyed()) return;
+                                clearClosedTabs(activity, cl, attempt + 1);
+                            }
+                        }, 1000L);
+                    }
+                    return;
+                }
+                Class<?> selectorClass = Class.forName(CLS_SELECTOR(), false, cl);
+                Class<?> profileClass = Class.forName(CLS_PROFILE, false, cl);
+                Class<?> bridgeClass = Class.forName(CLS_RECENTLY_CLOSED, false, cl);
+                java.lang.reflect.Constructor<?> ctor = bridgeClass.getDeclaredConstructor(
+                        profileClass, selectorClass);
+                ctor.setAccessible(true);
+                Object bridge = ctor.newInstance(profile, selector);
+                long ptr = XposedHelpers.getLongField(bridge, "a");
+                if (ptr == 0L) {
+                    XposedBridge.log(HookEntry.TAG + ": [156] recently-closed bridge ptr=0");
+                    return;
+                }
+                Class<?> nClass2 = Class.forName(HookEntry.CLS_J_N, false, cl);
+                java.util.ArrayList<Object> entries = new java.util.ArrayList<Object>();
+                Method zijo = nClass2.getMethod("ZIJO", int.class, int.class, long.class,
+                        Object.class);
+                zijo.invoke(null, Integer.valueOf(0), Integer.valueOf(25),
+                        Long.valueOf(ptr), entries);
+                int count = entries.size();
+                if (count > 0) {
+                    Method vij = nClass2.getMethod("VIJ", int.class, int.class, long.class);
+                    vij.invoke(null, Integer.valueOf(20), Integer.valueOf(count),
+                            Long.valueOf(ptr));
+                    XposedBridge.log(HookEntry.TAG + ": [156] cleared " + count
+                            + " recently-closed entrie(s)");
+                    try {
+                        bridgeClass.getMethod("onUpdated").invoke(bridge);
+                    } catch (Throwable ignored) {
+                    }
+                } else {
+                    XposedBridge.log(HookEntry.TAG
+                            + ": [156] recently-closed already empty");
+                }
+                try {
+                    bridgeClass.getMethod("a").invoke(bridge); // 释放 native bridge
+                } catch (Throwable ignored) {
+                }
+                return;
+            }
+            int period = 4; // 全部时间(v1.9.5 起固定, 原 mapDaysToPeriod(0)=4)
             Method m = nClass.getMethod("VIOOOOOOO", int.class, int.class, Object.class,
                     Object.class, Object.class, Object.class, Object.class, Object.class,
                     Object.class);
@@ -505,6 +596,9 @@ public final class HomeCleaner {
 
     private static boolean isIncognito(Object model) {
         try {
+            if (HookEntry.is156()) {
+                return Boolean.TRUE.equals(XposedHelpers.callMethod(model, "isIncognito"));
+            }
             Method m = findBySignature(model, boolean.class);
             if (m != null) {
                 return Boolean.TRUE.equals(m.invoke(model));
@@ -517,6 +611,10 @@ public final class HomeCleaner {
 
     private static int modelCount(Object model) {
         try {
+            if (HookEntry.is156()) {
+                Object c = XposedHelpers.callMethod(model, "getCount");
+                return c instanceof Integer ? ((Integer) c).intValue() : 0;
+            }
             Method m = findBySignature(model, int.class);
             if (m != null) {
                 Object c = m.invoke(model);
@@ -530,6 +628,9 @@ public final class HomeCleaner {
 
     private static Object modelGetTabAt(Object model, int i) {
         try {
+            if (HookEntry.is156()) {
+                return XposedHelpers.callMethod(model, "getTabAt", Integer.valueOf(i));
+            }
             Method m = findBySignature(model, Object.class, int.class);
             if (m != null) {
                 return m.invoke(model, Integer.valueOf(i));
@@ -542,6 +643,10 @@ public final class HomeCleaner {
 
     private static void closeTab(Object model, Object tab) {
         try {
+            if (HookEntry.is156()) {
+                XposedHelpers.callMethod(model, "closeTab", tab);
+                return;
+            }
             Method m = findBySignature(model, void.class, Object.class);
             if (m != null) {
                 m.invoke(model, tab);
@@ -579,12 +684,18 @@ public final class HomeCleaner {
             if (gurl == null) {
                 return false;
             }
-            Object spec = XposedHelpers.callMethod(gurl, "j");
+            Object spec = HookEntry.is156()
+                    ? XposedHelpers.getObjectField(gurl, "a")
+                    : XposedHelpers.callMethod(gurl, "j");
             if (!(spec instanceof String)) {
                 return false;
             }
             String url = (String) spec;
-            return isNtp(url) || url.equals(homeUrl);
+            if (url.equals(homeUrl)) {
+                return true;
+            }
+            // 只有主页本身就是 NTP 时, 任意 chrome-native:// 标签才算"主页"
+            return isNtp(homeUrl) && isNtp(url);
         } catch (Throwable t) {
             return false;
         }
@@ -600,11 +711,18 @@ public final class HomeCleaner {
             }
             Class<?> gurlClass = Class.forName(CLS_GURL, false, cl);
             Object gurl = gurlClass.getConstructor(String.class).newInstance(url);
-            Method m = findBySignature(model, Object.class, Object.class, int.class);
-            if (m == null) {
-                return null;
+            Object tab;
+            if (HookEntry.is156()) {
+                // 156: TabModelJniBridge.openTabProgrammatically(GURL,int,boolean)
+                tab = XposedHelpers.callMethod(model, "openTabProgrammatically",
+                        gurl, Integer.valueOf(2), Boolean.FALSE);
+            } else {
+                Method m = findBySignature(model, Object.class, Object.class, int.class);
+                if (m == null) {
+                    return null;
+                }
+                tab = m.invoke(model, gurl, Integer.valueOf(2));
             }
-            Object tab = m.invoke(model, gurl, Integer.valueOf(2));
             XposedBridge.log(HookEntry.TAG + ": opened home tab -> "
                     + (tab == null ? "null" : tab.getClass().getName()));
             return tab;

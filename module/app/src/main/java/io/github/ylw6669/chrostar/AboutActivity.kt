@@ -190,7 +190,7 @@ private fun AboutContent(
                 )
                 ArrowPreference(
                     title = "适配 Chrome 版本",
-                    summary = "145.0.7632.218(763221864)",
+                    summary = "156.0.8078.47 (807804704) / 152 / 145",
                     onClick = { },
                 )
                 ArrowPreference(

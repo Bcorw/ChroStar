@@ -3,8 +3,6 @@ package io.github.ylw6669.chrostar;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
-import de.robv.android.xposed.callbacks.XC_LoadPackage;
-
 import java.lang.reflect.Method;
 
 /**
@@ -43,13 +41,13 @@ public final class DownloadSafetyBypass {
     }
 
     /** 安装全部 hook(主进程) */
-    public static void hook(XC_LoadPackage.LoadPackageParam lpparam) {
-        hookDangerous(lpparam);
-        hookInsecure(lpparam);
-        hookDuplicate(lpparam);
-        hookPolicyWarning(lpparam);
-        hookLocationDialog(lpparam);
-        hookOpenDialog(lpparam);
+    public static void hook(ClassLoader cl) {
+        hookDangerous(cl);
+        hookInsecure(cl);
+        hookDuplicate(cl);
+        hookPolicyWarning(cl);
+        hookLocationDialog(cl);
+        hookOpenDialog(cl);
     }
 
     private static boolean bypassOff(String key) {
@@ -73,12 +71,28 @@ public final class DownloadSafetyBypass {
         return m.invoke(null, args);
     }
 
-    // v2.1.0: 弹窗枚举 id 按引擎版本分发(ChromeX 152.0.7977.75 实测值, 82 需实测校准)
-    private static int idDangerous()  { return "chrome152".equals(HookEntry.engineVersion) ? 43 : 124; }
-    private static int idInsecure()   { return "chrome152".equals(HookEntry.engineVersion) ? 2 : 3; }
-    private static int idDuplicate()  { return "chrome152".equals(HookEntry.engineVersion) ? 1 : 2; }
-    private static int idPolicy()     { return "chrome152".equals(HookEntry.engineVersion) ? 47 : 129; }
-    private static int idOpen()       { return "chrome152".equals(HookEntry.engineVersion) ? 9 : 15; }
+    // v2.3.0: 弹窗枚举 id 按引擎版本分发(156.0.8078.47 jadx 逐类实证)
+    // 156: dangerous allow 47 / deny 48, insecure 2, duplicate 1, policy allow 51 / deny 52, open 9
+    private static int idDangerous()  {
+        if (HookEntry.is156()) return Chrome156.ID_DANGEROUS_ALLOW;
+        return HookEntry.is152() ? 43 : 124;
+    }
+    private static int idInsecure()   {
+        if (HookEntry.is156()) return Chrome156.ID_INSECURE;
+        return HookEntry.is152() ? 2 : 3;
+    }
+    private static int idDuplicate()  {
+        if (HookEntry.is156()) return Chrome156.ID_DUPLICATE;
+        return HookEntry.is152() ? 1 : 2;
+    }
+    private static int idPolicy()     {
+        if (HookEntry.is156()) return Chrome156.ID_POLICY_ALLOW;
+        return HookEntry.is152() ? 47 : 129;
+    }
+    private static int idOpen()       {
+        if (HookEntry.is156()) return Chrome156.ID_OPEN_KEEP;
+        return HookEntry.is152() ? 9 : 15;
+    }
 
     /** VJO(int, long, Object) */
     private static void allowVJO(Object bridge, int id, long ptr, Object arg) {
@@ -124,22 +138,25 @@ public final class DownloadSafetyBypass {
     // ------------------------------------------------------------------
     // 1) 危险下载警告 ("文件可能有害") — 开关 bypass_dangerous
     // ------------------------------------------------------------------
-    private static void hookDangerous(XC_LoadPackage.LoadPackageParam lpparam) {
+    private static void hookDangerous(ClassLoader cl) {
         try {
             Class<?> windowClass = XposedHelpers.findClass(
-                    "org.chromium.ui.base.WindowAndroid", lpparam.classLoader);
-            // v2.2.1: 152 的 showDialog 多一个 boolean 尾参(6→7参)
-            boolean is152 = "chrome152".equals(HookEntry.engineVersion);
+                    "org.chromium.ui.base.WindowAndroid", cl);
+            // v2.2.1/2.3.0: 152/156 的 showDialog 多一个 boolean 尾参(6→7参)
+            boolean is152 = HookEntry.is152() || HookEntry.is156();
             Object[] paramTypes = is152
                     ? new Object[]{windowClass, String.class, String.class,
                                    long.class, String.class, int.class, boolean.class}
                     : new Object[]{windowClass, String.class, String.class,
                                    long.class, String.class, int.class};
-            XposedHelpers.findAndHookMethod(
-                    "org.chromium.chrome.browser.download.DangerousDownloadDialogBridge",
-                    lpparam.classLoader, "showDialog",
-                    paramTypes,
-                    new XC_MethodHook() {
+            Class<?> bridge = XposedHelpers.findClass(
+                    "org.chromium.chrome.browser.download.DangerousDownloadDialogBridge", cl);
+            Class<?>[] types = new Class<?>[paramTypes.length];
+            for (int i = 0; i < paramTypes.length; i++) {
+                types[i] = (Class<?>) paramTypes[i];
+            }
+            Method target = bridge.getDeclaredMethod("showDialog", types);
+            XposedBridge.hookMethod(target, new XC_MethodHook() {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) {
                             if (bypassOff(HookEntry.KEY_BYPASS_DANGEROUS)) return;
@@ -148,7 +165,7 @@ public final class DownloadSafetyBypass {
                                 String guid = (String) param.args[1];
                                 allowVJO(param.thisObject, idDangerous(), ptr, guid);
                                 param.setResult(null);
-                                log("dangerous download bypassed (VJO 124)");
+                                log("dangerous download bypassed (VJO " + idDangerous() + ")");
                             } catch (Throwable t) {
                                 err("dangerous", t);
                             }
@@ -163,13 +180,13 @@ public final class DownloadSafetyBypass {
     // ------------------------------------------------------------------
     // 2) 不安全下载警告 ("无法安全地下载") — 开关 bypass_insecure
     // ------------------------------------------------------------------
-    private static void hookInsecure(XC_LoadPackage.LoadPackageParam lpparam) {
+    private static void hookInsecure(ClassLoader cl) {
         try {
             Class<?> windowClass = XposedHelpers.findClass(
-                    "org.chromium.ui.base.WindowAndroid", lpparam.classLoader);
+                    "org.chromium.ui.base.WindowAndroid", cl);
             XposedHelpers.findAndHookMethod(
                     "org.chromium.chrome.browser.download.InsecureDownloadDialogBridge",
-                    lpparam.classLoader, "showDialog",
+                    cl, "showDialog",
                     windowClass, String.class, long.class, long.class,
                     new XC_MethodHook() {
                         @Override
@@ -180,7 +197,7 @@ public final class DownloadSafetyBypass {
                                 long downloadId = (Long) param.args[3];
                                 allowVJJZ(param.thisObject, idInsecure(), ptr, downloadId, true);
                                 param.setResult(null);
-                                log("insecure download bypassed (VJJZ 3, true)");
+                                log("insecure download bypassed (VJJZ " + idInsecure() + ", true)");
                             } catch (Throwable t) {
                                 err("insecure", t);
                             }
@@ -195,16 +212,16 @@ public final class DownloadSafetyBypass {
     // ------------------------------------------------------------------
     // 3) 重复下载确认 — 开关 bypass_duplicate
     // ------------------------------------------------------------------
-    private static void hookDuplicate(XC_LoadPackage.LoadPackageParam lpparam) {
+    private static void hookDuplicate(ClassLoader cl) {
         try {
             Class<?> windowClass = XposedHelpers.findClass(
-                    "org.chromium.ui.base.WindowAndroid", lpparam.classLoader);
+                    "org.chromium.ui.base.WindowAndroid", cl);
             Class<?> otrClass = XposedHelpers.findClass(
                     "org.chromium.chrome.browser.profiles.OtrProfileId",
-                    lpparam.classLoader);
+                    cl);
             XposedHelpers.findAndHookMethod(
                     "org.chromium.chrome.browser.download.DuplicateDownloadDialogBridge",
-                    lpparam.classLoader, "showDialog",
+                    cl, "showDialog",
                     windowClass, String.class, String.class, long.class,
                     boolean.class, otrClass, long.class,
                     new XC_MethodHook() {
@@ -240,7 +257,7 @@ public final class DownloadSafetyBypass {
                                 long downloadId = (Long) param.args[6];
                                 allowVJJZ(param.thisObject, idDuplicate(), ptr, downloadId, true);
                                 param.setResult(null);
-                                log("duplicate download bypassed (VJJZ 2, true)");
+                                log("duplicate download bypassed (VJJZ " + idDuplicate() + ", true)");
                             } catch (Throwable t) {
                                 err("duplicate", t);
                             }
@@ -255,13 +272,13 @@ public final class DownloadSafetyBypass {
     // ------------------------------------------------------------------
     // 4) 策略警告下载 — 开关 bypass_policy
     // ------------------------------------------------------------------
-    private static void hookPolicyWarning(XC_LoadPackage.LoadPackageParam lpparam) {
+    private static void hookPolicyWarning(ClassLoader cl) {
         try {
             Class<?> windowClass = XposedHelpers.findClass(
-                    "org.chromium.ui.base.WindowAndroid", lpparam.classLoader);
+                    "org.chromium.ui.base.WindowAndroid", cl);
             XposedHelpers.findAndHookMethod(
                     "org.chromium.chrome.browser.download.PolicyWarningDownloadDialogBridge",
-                    lpparam.classLoader, "showDialog",
+                    cl, "showDialog",
                     windowClass, String.class, String.class,
                     new XC_MethodHook() {
                         @Override
@@ -269,10 +286,10 @@ public final class DownloadSafetyBypass {
                             if (bypassOff(HookEntry.KEY_BYPASS_POLICY)) return;
                             try {
                                 long ptr = nativePtr(param.thisObject);
-                                String guid = (String) param.args[0];
+                                String guid = (String) param.args[1]; // args[0]=WindowAndroid
                                 allowVJO(param.thisObject, idPolicy(), ptr, guid);
                                 param.setResult(null);
-                                log("policy warning download bypassed (VJO 129)");
+                                log("policy warning download bypassed (VJO " + idPolicy() + ")");
                             } catch (Throwable t) {
                                 err("policy", t);
                             }
@@ -287,16 +304,16 @@ public final class DownloadSafetyBypass {
     // ------------------------------------------------------------------
     // 5) 保存位置/重命名对话框 — 开关 bypass_location
     // ------------------------------------------------------------------
-    private static void hookLocationDialog(XC_LoadPackage.LoadPackageParam lpparam) {
+    private static void hookLocationDialog(ClassLoader cl) {
         try {
             Class<?> windowClass = XposedHelpers.findClass(
-                    "org.chromium.ui.base.WindowAndroid", lpparam.classLoader);
+                    "org.chromium.ui.base.WindowAndroid", cl);
             Class<?> profileClass = XposedHelpers.findClass(
                     "org.chromium.chrome.browser.profiles.Profile",
-                    lpparam.classLoader);
+                    cl);
             XposedHelpers.findAndHookMethod(
                     "org.chromium.chrome.browser.download.DownloadDialogBridge",
-                    lpparam.classLoader, "showDialog",
+                    cl, "showDialog",
                     windowClass, long.class, int.class, int.class,
                     String.class, profileClass,
                     new XC_MethodHook() {
@@ -339,14 +356,14 @@ public final class DownloadSafetyBypass {
     // ------------------------------------------------------------------
     // 6) 打开方式询问 ("要打开此文件吗") — 开关 bypass_open
     // ------------------------------------------------------------------
-    private static void hookOpenDialog(XC_LoadPackage.LoadPackageParam lpparam) {
+    private static void hookOpenDialog(ClassLoader cl) {
         try {
             Class<?> profileClass = XposedHelpers.findClass(
                     "org.chromium.chrome.browser.profiles.Profile",
-                    lpparam.classLoader);
+                    cl);
             XposedHelpers.findAndHookMethod(
                     "org.chromium.chrome.browser.download.OpenDownloadDialogBridge",
-                    lpparam.classLoader, "showDialog",
+                    cl, "showDialog",
                     profileClass, String.class,
                     new XC_MethodHook() {
                         @Override

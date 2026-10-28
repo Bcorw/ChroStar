@@ -9,7 +9,6 @@ import android.text.TextUtils;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
-import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 import java.io.File;
 import java.lang.reflect.Method;
@@ -56,16 +55,21 @@ public final class AutoInstallApk {
     }
 
     /** 安装 hook(主进程) */
-    public static void hook(XC_LoadPackage.LoadPackageParam lpparam) {
-        OverwriteAndAutoOpen.hookOverwriteDuplicate(lpparam);
-        if ("chrome152".equals(HookEntry.engineVersion)) {
-            hook152(lpparam);
+    public static void hook(ClassLoader cl) {
+        OverwriteAndAutoOpen.hookOverwriteDuplicate(cl);
+        if (HookEntry.is156()) {
+            hook156(cl);
+            hookInlineDownloadPath(cl); // 156 兜底: DownloadController.onDownloadCompleted
+            return;
+        }
+        if (HookEntry.is152()) {
+            hook152(cl);
             return; // 152 短名(c9o/zkg)不同, 独立路径
         }
-        hookCompletedNotification(lpparam);
-        hookOfflineItemCompletePath(lpparam);
-        hookOpenDownloadEntry(lpparam);
-        hookInlineDownloadPath(lpparam);
+        hookCompletedNotification(cl);
+        hookOfflineItemCompletePath(cl);
+        hookOpenDownloadEntry(cl);
+        hookInlineDownloadPath(cl);
     }
 
     // ------------------------------------------------------------------
@@ -76,9 +80,9 @@ public final class AutoInstallApk {
     // 下载完成时 Chrome 必执行 c9o.run() 且 i==1 → 更新完成通知,
     // 这就是用户看到的"文件已下载完毕"通知 —— 最准确的完成时机。
     // ------------------------------------------------------------------
-    private static void hookCompletedNotification(XC_LoadPackage.LoadPackageParam lpparam) {
+    private static void hookCompletedNotification(ClassLoader cl) {
         try {
-            Class<?> c9o = XposedHelpers.findClass("c9o", lpparam.classLoader);
+            Class<?> c9o = XposedHelpers.findClass("c9o", cl);
             XposedHelpers.findAndHookMethod(c9o, "run",
                     new XC_MethodHook() {
                         @Override
@@ -96,8 +100,11 @@ public final class AutoInstallApk {
                                 if (info == null) return;
                                 ClassLoader cl = info.getClass().getClassLoader();
                                 String mime = (String) XposedHelpers.getObjectField(info, "c");
-                                String path = (String) XposedHelpers.getObjectField(info, "e");
-                                String name = (String) XposedHelpers.getObjectField(info, "g");
+                                // 156: c=mime, e=title, g=file_path; 145: e=path, g=name
+                                String path = (String) XposedHelpers.getObjectField(
+                                        info, HookEntry.is156() ? "g" : "e");
+                                String name = (String) XposedHelpers.getObjectField(
+                                        info, HookEntry.is156() ? "e" : "g");
                                 if (!OverwriteAndAutoOpen.shouldAutoOpen(mime, name)) return;
                                 final String fileName = (path != null && path.contains("/"))
                                         ? new File(path).getName() : path;
@@ -112,7 +119,8 @@ public final class AutoInstallApk {
                                 Thread t = new Thread(new Runnable() {
                                     @Override
                                     public void run() {
-                                        waitAndInstall(finalName, fcl, mimeFromName(finalName));
+                                        waitAndInstall(finalName, fcl,
+                                                mime != null ? mime : mimeFromName(finalName));
                                     }
                                 });
                                 t.setDaemon(true);
@@ -134,14 +142,14 @@ public final class AutoInstallApk {
     // 主路径 1: 内置下载完成 → zkg.f(OfflineItem, OfflineItemVisuals)
     // 下载完成后"文件已下载完毕"通知由此产生, 自动触发安装。
     // ------------------------------------------------------------------
-    private static void hookOfflineItemCompletePath(XC_LoadPackage.LoadPackageParam lpparam) {
+    private static void hookOfflineItemCompletePath(ClassLoader cl) {
         try {
-            Class<?> zkg = XposedHelpers.findClass("zkg", lpparam.classLoader);
+            Class<?> zkg = XposedHelpers.findClass("zkg", cl);
             Class<?> offlineItemCls = XposedHelpers.findClass(CLS_OFFLINE_ITEM,
-                    lpparam.classLoader);
+                    cl);
             Class<?> visualsCls = XposedHelpers.findClass(
                     "org.chromium.components.offline_items_collection.OfflineItemVisuals",
-                    lpparam.classLoader);
+                    cl);
             XposedHelpers.findAndHookMethod(zkg, "f", offlineItemCls, visualsCls,
                     new XC_MethodHook() {
                         @Override
@@ -203,11 +211,11 @@ public final class AutoInstallApk {
     //           h=Context, i=完整路径。
     // 只拦截 APK → 自动安装; 其他文件放行原逻辑。
     // ------------------------------------------------------------------
-    private static void hookOpenDownloadEntry(XC_LoadPackage.LoadPackageParam lpparam) {
+    private static void hookOpenDownloadEntry(ClassLoader cl) {
         try {
             Class<?> utilsCls = XposedHelpers.findClass(CLS_DOWNLOAD_UTILS,
-                    lpparam.classLoader);
-            Class<?> qe7Cls = XposedHelpers.findClass("qe7", lpparam.classLoader);
+                    cl);
+            Class<?> qe7Cls = XposedHelpers.findClass("qe7", cl);
             XposedHelpers.findAndHookMethod(utilsCls, "a", qe7Cls,
                     new XC_MethodHook() {
                         @Override
@@ -249,17 +257,17 @@ public final class AutoInstallApk {
     // ------------------------------------------------------------------
     // 兜底 2: Chrome 内嵌下载完成 → DownloadController.onDownloadCompleted
     // ------------------------------------------------------------------
-    private static void hookInlineDownloadPath(XC_LoadPackage.LoadPackageParam lpparam) {
+    private static void hookInlineDownloadPath(ClassLoader cl) {
         try {
             XposedHelpers.findAndHookMethod(
                     CLS_DOWNLOAD_CONTROLLER,
-                    lpparam.classLoader,
+                    cl,
                     "onDownloadCompleted",
                     XposedHelpers.findClass("org.chromium.chrome.browser.tab.Tab",
-                            lpparam.classLoader),
+                            cl),
                     XposedHelpers.findClass(
                             "org.chromium.chrome.browser.download.DownloadInfo",
-                            lpparam.classLoader),
+                            cl),
                     boolean.class,
                     new XC_MethodHook() {
                         @Override
@@ -273,8 +281,11 @@ public final class AutoInstallApk {
                                 if (info == null) return;
                                 ClassLoader cl = info.getClass().getClassLoader();
                                 String mime = (String) XposedHelpers.getObjectField(info, "c");
-                                String path = (String) XposedHelpers.getObjectField(info, "e");
-                                String name = (String) XposedHelpers.getObjectField(info, "g");
+                                // 156: c=mime, e=title, g=file_path; 145: e=path, g=name
+                                String path = (String) XposedHelpers.getObjectField(
+                                        info, HookEntry.is156() ? "g" : "e");
+                                String name = (String) XposedHelpers.getObjectField(
+                                        info, HookEntry.is156() ? "e" : "g");
                                 if (!OverwriteAndAutoOpen.shouldAutoOpen(mime, name)) return;
                                 // 真机日志证实: onDownloadCompleted 是下载完成时确定触发的回调,
                                 // 但此时文件可能还在 Chrome 私有临时目录, 尚未复制到公共目录,
@@ -322,23 +333,29 @@ public final class AutoInstallApk {
         waitAndInstall(fileName, cl, null);
     }
 
-    /** v2.2.1: 支持 MIME 参数(扩展类型自动打开); mime 为 null 时按 APK 处理 */
-    private static void waitAndInstall(final String fileName, final ClassLoader cl,
+    /** 支持 MIME 参数(扩展类型自动打开); mime 为 null 时按文件名推断 */
+    private static void waitAndInstall(final String pathOrName, final ClassLoader cl,
                                        final String mimeOverride) {
-        // 路径可能是 content://(MediaStore/FileProvider), 直接打开
-        if (fileName != null && fileName.startsWith("content://")) {
-            try {
-                Intent intent = new Intent(Intent.ACTION_VIEW);
-                intent.setDataAndType(Uri.parse(fileName),
-                        mimeOverride != null ? mimeOverride : APK_MIME);
-                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                launchInstaller(fileName, intent, cl);
-            } catch (Throwable t) {
-                XposedBridge.log(HookEntry.TAG
-                        + ": open apk installer failed (content uri) -> " + t);
-            }
+        if (pathOrName == null || pathOrName.isEmpty()) {
             return;
+        }
+        final String mime = (mimeOverride != null && !mimeOverride.isEmpty())
+                ? mimeOverride : mimeFromName(pathOrName);
+        // content://(MediaStore/FileProvider), 直接打开
+        if (pathOrName.startsWith("content://")) {
+            openFileUri(Uri.parse(pathOrName), mime, cl);
+            return;
+        }
+        // 已经是绝对路径且文件存在: 直接打开(156 OfflineItem.k0 就是完整路径)
+        String fileName = pathOrName;
+        if (pathOrName.startsWith("/")) {
+            File direct = new File(pathOrName);
+            fileName = direct.getName();
+            if (direct.exists() && direct.length() > 0
+                    && !fileName.startsWith(".com.google.Chrome.")) {
+                openDownloadedFile(direct.getAbsolutePath(), mime, cl);
+                return;
+            }
         }
         File publicDl = null;
         File privateDl = null;
@@ -364,17 +381,13 @@ public final class AutoInstallApk {
                         found = f;
                         break;
                     }
-                    // 部分下载器会先写 .crdownload/.tmp 再改名
                     File[] cands = publicDl.listFiles();
                     if (cands != null) {
                         for (File c : cands) {
                             if (c == null) continue;
                             String cn = c.getName();
-                            if (cn.equals(fileName)) {
-                                found = c;
-                                break;
-                            }
-                            if (cn.startsWith(fileName) || fileName.startsWith(cn)) {
+                            if (cn.equals(fileName)
+                                    || cn.startsWith(fileName) || fileName.startsWith(cn)) {
                                 found = c;
                                 break;
                             }
@@ -393,11 +406,8 @@ public final class AutoInstallApk {
                         for (File c : cands2) {
                             if (c == null) continue;
                             String cn = c.getName();
-                            if (cn.equals(fileName)) {
-                                found = c;
-                                break;
-                            }
-                            if (cn.startsWith(fileName) || fileName.startsWith(cn)) {
+                            if (cn.equals(fileName)
+                                    || cn.startsWith(fileName) || fileName.startsWith(cn)) {
                                 found = c;
                                 break;
                             }
@@ -405,28 +415,25 @@ public final class AutoInstallApk {
                     }
                     if (found != null) break;
                     // Chrome 临时文件 .com.google.Chrome.XXXX
-                    if (privateRoot != null) {
-                        File[] tmps = privateDl.listFiles();
-                        if (tmps != null) {
-                            for (File c : tmps) {
-                                if (c == null) continue;
-                                String cn = c.getName();
-                                if (cn.startsWith(".com.google.Chrome.")
-                                        && c.length() > 0
-                                        && c.lastModified() > System.currentTimeMillis() - 120000L) {
-                                    found = c;
-                                    break;
-                                }
+                    File[] tmps = privateDl.listFiles();
+                    if (tmps != null) {
+                        for (File c : tmps) {
+                            if (c == null) continue;
+                            String cn = c.getName();
+                            if (cn.startsWith(".com.google.Chrome.")
+                                    && c.length() > 0
+                                    && c.lastModified() > System.currentTimeMillis() - 120000L) {
+                                found = c;
+                                break;
                             }
                         }
                     }
                     if (found != null) break;
                 }
-                // MediaStore 兑底: Android 11+ 作用域存储下 File.exists 可能不可见,
-                // 但 MediaStore 一定能查到刚下载的文件
+                // MediaStore 兜底: Android 11+ 作用域存储下 File.exists 可能不可见
                 Uri msUri = queryMediaStore(fileName);
                 if (msUri != null) {
-                    openApkInstallerUri(msUri, cl);
+                    openFileUri(msUri, mime, cl);
                     return;
                 }
             } catch (Throwable ignored) {
@@ -438,12 +445,78 @@ public final class AutoInstallApk {
             }
         }
         if (found == null) {
-            XposedBridge.log(HookEntry.TAG + ": apk file not found in Download dir within 60s ["
+            XposedBridge.log(HookEntry.TAG + ": file not found in Download dir within 60s ["
                     + fileName + "], give up");
             return;
         }
-        String abs = found.getAbsolutePath();
-        openApkInstaller(abs, cl); // v1.9.6: 原子去重在 openApkInstaller 内部
+        openDownloadedFile(found.getAbsolutePath(), mime, cl);
+    }
+
+    /** APK -> 系统安装器; 其他类型 -> ACTION_VIEW(mime) */
+    private static void openDownloadedFile(String absPath, String mime, ClassLoader cl) {
+        if (HookEntry.isApk(mime, absPath) || mime == null) {
+            openApkInstaller(absPath, cl);
+        } else {
+            Uri uri = toUriFromPath(absPath, cl);
+            if (uri == null) {
+                XposedBridge.log(HookEntry.TAG
+                        + ": cannot build content uri for [" + absPath + "], skip");
+                return;
+            }
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(uri, mime);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            launchInstaller(absPath, intent, cl);
+        }
+    }
+
+    /** content Uri + mime 打开 */
+    private static void openFileUri(Uri uri, String mime, ClassLoader cl) {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            String type = (mime != null && !mime.isEmpty()) ? mime : APK_MIME;
+            intent.setDataAndType(uri, type);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            launchInstaller(uri.toString(), intent, cl);
+        } catch (Throwable t) {
+            XposedBridge.log(HookEntry.TAG + ": open file uri failed -> " + t);
+        }
+    }
+
+    /**
+     * 绝对路径 -> content Uri。
+     * 156: DownloadUtils.f(String); 145: DownloadUtils.e(String)。统一按
+     * "static Uri (String)" 签名查找, 避免版本间方法名变化。
+     */
+    private static Uri toUriFromPath(String absPath, ClassLoader cl) {
+        try {
+            Class<?> utilsClass = Class.forName(CLS_DOWNLOAD_UTILS, false, cl);
+            for (Method m : utilsClass.getMethods()) {
+                if (!java.lang.reflect.Modifier.isStatic(m.getModifiers())) continue;
+                if (m.getReturnType() != Uri.class) continue;
+                Class<?>[] ps = m.getParameterTypes();
+                if (ps.length != 1 || ps[0] != String.class) continue;
+                try {
+                    Object r = m.invoke(null, absPath);
+                    if (r instanceof Uri) {
+                        Uri u = (Uri) r;
+                        if (u != null && !Uri.EMPTY.equals(u)
+                                && !"file".equals(u.getScheme())) {
+                            return u;
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            return queryMediaStore(new File(absPath).getName());
+        } catch (Throwable ignored) {
+        }
+        return null;
     }
 
     /** MediaStore 查询刚下载的 APK(按文件名, 取最新) */
@@ -593,31 +666,7 @@ public final class AutoInstallApk {
     /** 打开系统安装器(绝对路径 → content URI) */
     private static void openApkInstaller(String absPath, ClassLoader cl) {
         try {
-            Uri uri = null;
-            // 优先用 Chrome 的 DownloadUtils.e(绝对路径) 转 content:// URI
-            try {
-                Class<?> utilsClass = Class.forName(CLS_DOWNLOAD_UTILS, false, cl);
-                Method toUri = utilsClass.getMethod("e", String.class);
-                Object r = toUri.invoke(null, absPath);
-                if (r instanceof Uri) {
-                    Uri u = (Uri) r;
-                    if (u != null && !Uri.EMPTY.equals(u)
-                            && !"file".equals(u.getScheme())) {
-                        uri = u;
-                    }
-                }
-            } catch (Throwable ignored) {
-            }
-            if (uri == null) {
-                // 兜底: MediaStore 查询(Android 11+ 作用域存储)
-                try {
-                    Uri ms = queryMediaStore(new File(absPath).getName());
-                    if (ms != null) {
-                        uri = ms;
-                    }
-                } catch (Throwable ignored) {
-                }
-            }
+            Uri uri = toUriFromPath(absPath, cl);
             if (uri == null) {
                 XposedBridge.log(HookEntry.TAG
                         + ": cannot build content uri for [" + absPath + "], skip");
@@ -634,17 +683,85 @@ public final class AutoInstallApk {
     }
 
     // ------------------------------------------------------------------
+    // v2.3.0: Chrome 156 安装路径。
+    // vg8 = DownloadMessageUiController; d(OfflineItem,boolean,boolean,boolean)
+    // 完成态 OfflineItem.s0==2(COMPLETE); 字段 k0=file_path, V=title, l0=mime。
+    // ------------------------------------------------------------------
+    private static void hook156(ClassLoader cl) {
+        try {
+            Class<?> vg8 = XposedHelpers.findClass(Chrome156.DOWNLOAD_MESSAGE, cl);
+            Class<?> offlineItemCls = XposedHelpers.findClass(CLS_OFFLINE_ITEM, cl);
+            XposedHelpers.findAndHookMethod(vg8, "d", offlineItemCls,
+                    boolean.class, boolean.class, boolean.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                if (!HookEntry.readPrefBoolean(
+                                        HookEntry.KEY_AUTO_INSTALL_APK, true)) {
+                                    return;
+                                }
+                                Object item = param.args[0];
+                                if (item == null) return;
+                                int state = XposedHelpers.getIntField(item,
+                                        Chrome156.OI_STATE);
+                                if (state != Chrome156.STATE_COMPLETE) return;
+                                String path = tryStringField(item, Chrome156.OI_PATH);
+                                String title = tryStringField(item, Chrome156.OI_TITLE);
+                                String mime = tryStringField(item, Chrome156.OI_MIME);
+                                String name = (title != null && !title.isEmpty()) ? title
+                                        : (path != null ? new File(path).getName() : null);
+                                if (!OverwriteAndAutoOpen.shouldAutoOpen(mime, name)
+                                        && !OverwriteAndAutoOpen.shouldAutoOpen(mime, path)) {
+                                    return;
+                                }
+                                if (name == null || name.isEmpty()) {
+                                    XposedBridge.log(HookEntry.TAG
+                                            + ": [156] download complete but no file name, skip");
+                                    return;
+                                }
+                                XposedBridge.log(HookEntry.TAG
+                                        + ": [156] download complete: " + name
+                                        + " mime=" + mime + " path=" + path);
+                                final String target = (path != null && !path.isEmpty())
+                                        ? path : name;
+                                final String fName = name;
+                                final String fMime = (mime != null && !mime.isEmpty())
+                                        ? mime : mimeFromName(fName);
+                                final ClassLoader fcl = cl;
+                                Thread t = new Thread(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        waitAndInstall(target, fcl, fMime);
+                                    }
+                                });
+                                t.setDaemon(true);
+                                t.start();
+                            } catch (Throwable t) {
+                                XposedBridge.log(HookEntry.TAG
+                                        + ": [156] auto-install hook error -> " + t);
+                            }
+                        }
+                    });
+            XposedBridge.log(HookEntry.TAG
+                    + ": [156] hooked " + Chrome156.DOWNLOAD_MESSAGE + ".d (auto-install/apk)");
+        } catch (Throwable t) {
+            XposedBridge.log(HookEntry.TAG + ": [156] hook vg8 failed -> " + t);
+        }
+    }
+
+    // ------------------------------------------------------------------
     // v2.1.0: Chrome 152 专用安装路径。
     // 语义锚点: ia8.d(OfflineItem,boolean,boolean,boolean) 同 145 je7.d —
     // 完成态(offlineItem.q0==2)时从 OfflineItem 拿路径/文件名执行安装逻辑。
     // OfflineItem 152 字段: q0=state, 其余路径/名字段名经 DownloadInfo 转换确认后补;
     // 本实现仅对 APK( mime 判定 via OfflineItem 兜底字段) 触发, 字段缺失时安全跳过。
     // ------------------------------------------------------------------
-    private static void hook152(XC_LoadPackage.LoadPackageParam lpparam) {
+    private static void hook152(ClassLoader cl) {
         try {
-            Class<?> ia8 = XposedHelpers.findClass("ia8", lpparam.classLoader);
+            Class<?> ia8 = XposedHelpers.findClass("ia8", cl);
             Class<?> offlineItemCls = XposedHelpers.findClass(CLS_OFFLINE_ITEM,
-                    lpparam.classLoader);
+                    cl);
             XposedHelpers.findAndHookMethod(ia8, "d", offlineItemCls,
                     boolean.class, boolean.class, boolean.class,
                     new XC_MethodHook() {
@@ -666,7 +783,7 @@ public final class AutoInstallApk {
                                 String mime = tryStringField(item, "j0", "f0");
                                 if (!OverwriteAndAutoOpen.shouldAutoOpen(mime, name)) return;
                                 XposedBridge.log(HookEntry.TAG + ": [152] apk download completed: " + name);
-                                installApk152(path, name, mime, lpparam.classLoader);
+                                installApk152(path, name, mime, cl);
                             } catch (Throwable t) {
                                 XposedBridge.log(HookEntry.TAG + ": [152] install hook error -> " + t);
                             }

@@ -14,6 +14,15 @@
 # v2.1.0: Chrome152 符号表常量与 matches 反射被 R8 误裁
 -keep class io.github.ylw6669.chrostar.Chrome152 { *; }
 
+# v2.3.0: Chrome 156 符号表(短名/签名反射入口)
+-keep class io.github.ylw6669.chrostar.Chrome156 { *; }
+
 # v2.2.0: 新功能类(反射字段名/跨类调用)
 -keep class io.github.ylw6669.chrostar.OverwriteAndAutoOpen { *; }
 -keep class io.github.ylw6669.chrostar.LocationAndDiagnostics { *; }
+
+# v2.3.1: NTP 书签启动器(WebView JS bridge 不能混淆)
+-keep class io.github.ylw6669.chrostar.BookmarkHome { *; }
+-keepclassmembers class io.github.ylw6669.chrostar.BookmarkHome$Bridge {
+    @android.webkit.JavascriptInterface <methods>;
+}

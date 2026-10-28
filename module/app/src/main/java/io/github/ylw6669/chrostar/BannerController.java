@@ -7,7 +7,6 @@ import android.widget.Toast;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
-import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 
 /**
@@ -32,20 +31,26 @@ public final class BannerController {
 
     /** 待拦截的横幅标志(je7 下载完成标记, nze.c 拦截后清) */
     private static volatile boolean sPendingBanner = false;
+    /** 156: 最近一次 OfflineItem 更新是否为 APK(用于上屏时决定是否拦截下载横幅) */
+    private static volatile boolean sLastItemApk = false;
 
     private BannerController() {
     }
 
     private static boolean is152() {
-        return "chrome152".equals(HookEntry.engineVersion);
+        return HookEntry.is152();
+    }
+
+    private static boolean is156() {
+        return HookEntry.is156();
     }
 
     /** 安装 hook(主进程) */
-    public static void hook(XC_LoadPackage.LoadPackageParam lpparam) {
-        hookDownloadBanner(lpparam);
-        hookTranslateBanner(lpparam);
-        hookTranslateCreate(lpparam);
-        hookBannerDisplay(lpparam);
+    public static void hook(ClassLoader cl) {
+        hookDownloadBanner(cl);
+        hookTranslateBanner(cl);
+        hookTranslateCreate(cl);
+        hookBannerDisplay(cl);
     }
 
     // ------------------------------------------------------------------
@@ -53,14 +58,14 @@ public final class BannerController {
     // TranslateMessage.create(WebContents, long, int) 是 native 调用的静态工厂,
     // 返回 null 则 native 拿不到对象, 横幅无从显示(create 内部本身有 null 兜底路径)。
     // ------------------------------------------------------------------
-    private static void hookTranslateCreate(XC_LoadPackage.LoadPackageParam lpparam) {
+    private static void hookTranslateCreate(ClassLoader cl) {
         try {
             Class<?> tmCls = XposedHelpers.findClass(
                     "org.chromium.components.translate.TranslateMessage",
-                    lpparam.classLoader);
+                    cl);
             Class<?> wcCls = XposedHelpers.findClass(
                     "org.chromium.content_public.browser.WebContents",
-                    lpparam.classLoader);
+                    cl);
             XposedHelpers.findAndHookMethod(tmCls, "create", wcCls, long.class, int.class,
                     new XC_MethodHook() {
                         @Override
@@ -92,11 +97,11 @@ public final class BannerController {
     // = 翻译提示幅幅的显示入口(native 触发),
     // 拦截后翻译提示完全不显示。
     // ------------------------------------------------------------------
-    private static void hookTranslateBanner(XC_LoadPackage.LoadPackageParam lpparam) {
+    private static void hookTranslateBanner(ClassLoader cl) {
         try {
             Class<?> tmCls = XposedHelpers.findClass(
                     "org.chromium.components.translate.TranslateMessage",
-                    lpparam.classLoader);
+                    cl);
             XposedHelpers.findAndHookMethod(tmCls, "showMessage",
                     String.class, String.class, String.class, boolean.class,
                     new XC_MethodHook() {
@@ -126,11 +131,13 @@ public final class BannerController {
     // ------------------------------------------------------------------
     // je7.d(OfflineItem, boolean, boolean, boolean) → 标记下载完成横幅
     // ------------------------------------------------------------------
-    private static void hookDownloadBanner(XC_LoadPackage.LoadPackageParam lpparam) {
+    private static void hookDownloadBanner(ClassLoader cl) {
         try {
-            Class<?> je7 = XposedHelpers.findClass(is152() ? CLS_JE7_152 : CLS_JE7, lpparam.classLoader);
+            String clsName = is156() ? Chrome156.DOWNLOAD_MESSAGE
+                    : (is152() ? CLS_JE7_152 : CLS_JE7);
+            Class<?> je7 = XposedHelpers.findClass(clsName, cl);
             Class<?> offlineItemCls = XposedHelpers.findClass(CLS_OFFLINE_ITEM,
-                    lpparam.classLoader);
+                    cl);
             XposedHelpers.findAndHookMethod(je7, "d", offlineItemCls,
                     boolean.class, boolean.class, boolean.class,
                     new XC_MethodHook() {
@@ -139,10 +146,31 @@ public final class BannerController {
                             try {
                                 Object item = param.args[0];
                                 if (item == null) return;
-                                int state = XposedHelpers.getIntField(item, is152() ? "q0" : "m0");
-                                if (state != 2) return; // 只处理完成态
-                                String mime = (String) XposedHelpers.getObjectField(item, "f0");
-                                String name = (String) XposedHelpers.getObjectField(item, "e0");
+                                // 先记录本次更新是否 APK: 下载进度横幅在完成前就已创建,
+                                // 只能靠 OfflineItem 的 mime/title 判断。
+                                if (is156()) {
+                                    String m = (String) XposedHelpers.getObjectField(
+                                            item, Chrome156.OI_MIME);
+                                    String n = (String) XposedHelpers.getObjectField(
+                                            item, Chrome156.OI_TITLE);
+                                    sLastItemApk = HookEntry.isApk(m, n);
+                                }
+                                int state = XposedHelpers.getIntField(item,
+                                        is156() ? Chrome156.OI_STATE
+                                                : (is152() ? "q0" : "m0"));
+                                if (HookEntry.DEBUG && is156() && state == 2) {
+                                    XposedBridge.log(HookEntry.TAG + ": [156] vg8.d complete title="
+                                            + XposedHelpers.getObjectField(item, Chrome156.OI_TITLE));
+                                }
+                                if (is156() ? state != Chrome156.STATE_COMPLETE : state != 2) {
+                                    return; // 只处理完成态
+                                }
+                                String mime = (String) XposedHelpers.getObjectField(item,
+                                        is156() ? Chrome156.OI_MIME
+                                                : (is152() ? "j0" : "f0"));
+                                String name = (String) XposedHelpers.getObjectField(item,
+                                        is156() ? Chrome156.OI_TITLE
+                                                : (is152() ? "T" : "e0"));
                                 boolean isApk = HookEntry.isApk(mime, name);
 
                                 boolean apkToast = HookEntry.readPrefBoolean(
@@ -159,7 +187,9 @@ public final class BannerController {
 
                                 if (shouldToast) {
                                     // v1.9.9: 从路径提取文件名(而非 e0 title, 后者可能是 URL)
-                                    String path = (String) XposedHelpers.getObjectField(item, "P");
+                                    String path = (String) XposedHelpers.getObjectField(item,
+                                            is156() ? Chrome156.OI_PATH
+                                                    : (is152() ? "i0" : "P"));
                                     String fileName = null;
                                     if (path != null && !path.isEmpty() && !path.startsWith("content://")) {
                                         try {
@@ -199,18 +229,20 @@ public final class BannerController {
     // v1.9.8: 修复 after 中 getResult()==null 对 void 方法恒真导致时长从不生效的 bug,
     //         改用 mIntercepted 标志位判断是否被拦截。
     // ------------------------------------------------------------------
-    private static void hookBannerDisplay(XC_LoadPackage.LoadPackageParam lpparam) {
+    private static void hookBannerDisplay(ClassLoader cl) {
         // v1.10.2: 分开写死参数类型, 不再用 Class[] 数组传递
         // (LSPosed varargs 不展开数组, 导致 hook nze.b/c 注册失败)
-        hookNzeC(lpparam);
-        hookNzeB(lpparam);
+        hookNzeC(cl);
+        hookNzeB(cl);
     }
 
-    private static void hookNzeC(XC_LoadPackage.LoadPackageParam lpparam) {
+    private static void hookNzeC(ClassLoader cl) {
         try {
-            Class<?> nze = XposedHelpers.findClass(is152() ? CLS_NZE_152 : CLS_NZE, lpparam.classLoader);
+            String clsName = is156() ? Chrome156.MESSAGE_UI
+                    : (is152() ? CLS_NZE_152 : CLS_NZE);
+            Class<?> nze = XposedHelpers.findClass(clsName, cl);
             Class<?> pmCls = XposedHelpers.findClass(
-                    "org.chromium.ui.modelutil.PropertyModel", lpparam.classLoader);
+                    "org.chromium.ui.modelutil.PropertyModel", cl);
             XposedHelpers.findAndHookMethod(nze, "c", pmCls, boolean.class,
                     new BannerHook("c"));
             XposedBridge.log(HookEntry.TAG
@@ -220,13 +252,15 @@ public final class BannerController {
         }
     }
 
-    private static void hookNzeB(XC_LoadPackage.LoadPackageParam lpparam) {
+    private static void hookNzeB(ClassLoader cl) {
         try {
-            Class<?> nze = XposedHelpers.findClass(is152() ? CLS_NZE_152 : CLS_NZE, lpparam.classLoader);
+            String clsName = is156() ? Chrome156.MESSAGE_UI
+                    : (is152() ? CLS_NZE_152 : CLS_NZE);
+            Class<?> nze = XposedHelpers.findClass(clsName, cl);
             Class<?> pmCls = XposedHelpers.findClass(
-                    "org.chromium.ui.modelutil.PropertyModel", lpparam.classLoader);
+                    "org.chromium.ui.modelutil.PropertyModel", cl);
             Class<?> wcCls = XposedHelpers.findClass(
-                    "org.chromium.content_public.browser.WebContents", lpparam.classLoader);
+                    "org.chromium.content_public.browser.WebContents", cl);
             XposedHelpers.findAndHookMethod(nze, "b", pmCls, wcCls, int.class, boolean.class,
                     new BannerHook("b"));
             XposedBridge.log(HookEntry.TAG
@@ -249,6 +283,16 @@ public final class BannerController {
         protected void beforeHookedMethod(MethodHookParam param) {
             mIntercepted = false;
             try {
+                if (is156()) {
+                    Object model = param.args[0];
+                    if (shouldSuppressDownloadMessage(model)) {
+                        if (HookEntry.DEBUG) XposedBridge.log(HookEntry.TAG
+                                + ": [156] suppressed download message via qvg." + mName);
+                        mIntercepted = true;
+                        param.setResult(null);
+                        return;
+                    }
+                }
                 // v1.10.1: 隐藏翻译横幅双保险 —— 消息 ID == 29 即翻译横幅
                 if (HookEntry.readPrefBoolean(
                         HookEntry.KEY_HIDE_TRANSLATE_BANNER, true)) {
@@ -276,8 +320,47 @@ public final class BannerController {
         }
     }
 
+    /**
+     * 156: 下载消息(ID=16)在下载开始时就创建, 完成时只更新文本, 不会再次走 qvg 显示。
+     * 因此必须在上屏时按 title 判断是否 APK, 直接拦截整个下载横幅;
+     * 完成 Toast 由 vg8.d 钩子负责。
+     */
+    private static boolean shouldSuppressDownloadMessage(Object model) {
+        if (model == null) return false;
+        try {
+            boolean all = HookEntry.readPrefBoolean(HookEntry.KEY_BANNER_ALL_TOAST, false);
+            boolean apk = HookEntry.readPrefBoolean(HookEntry.KEY_BANNER_APK_TOAST, true);
+            if (!all && !apk) return false;
+            ClassLoader cl = model.getClass().getClassLoader();
+            Class<?> qug = Class.forName("qug", false, cl);
+            Object idKey = XposedHelpers.getStaticObjectField(qug, "a");
+            Object id = XposedHelpers.callMethod(model, "h", idKey);
+            if (!(id instanceof Integer) || ((Integer) id).intValue() != 16) {
+                return false; // 16 = download message
+            }
+            if (all) return true;
+            if (apk && sLastItemApk) {
+                XposedBridge.log(HookEntry.TAG
+                        + ": [156] suppressing download banner (APK in progress)");
+                return true;
+            }
+            // 兜底: 某些场景 title 直接是文件名
+            Object titleKey = XposedHelpers.getStaticObjectField(qug, "i");
+            Object title = XposedHelpers.callMethod(model, "h", titleKey);
+            String name = title instanceof String ? (String) title : null;
+            return name != null && name.toLowerCase().endsWith(".apk");
+        } catch (Throwable t) {
+            if (HookEntry.DEBUG) XposedBridge.log(HookEntry.TAG
+                    + ": shouldSuppressDownloadMessage error -> " + t);
+            return false;
+        }
+    }
+
     /** v1.10.1: 判断 PropertyModel 是否为翻译横幅(消息 ID == 29) */
     private static boolean isTranslateMessage(Object model, ClassLoader cl) {
+        // 156 消息系统的 PropertyModel key 类已重构; 翻译横幅由
+        // TranslateMessage.create/showMessage 双重拦截, 这里只服务 145/152
+        if (is156()) return false;
         try {
             Class<?> qye = Class.forName("qye", false, cl);
             Object idKey = XposedHelpers.getStaticObjectField(qye, "a");
@@ -299,6 +382,7 @@ public final class BannerController {
                         android.content.Context app = HookEntry.getAppContext(null);
                         if (app != null) {
                             Toast.makeText(app, msg, Toast.LENGTH_SHORT).show();
+                            if (HookEntry.DEBUG) XposedBridge.log(HookEntry.TAG + ": toast " + msg);
                         }
                     } catch (Throwable ignored) {
                     }

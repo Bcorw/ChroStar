@@ -45,6 +45,15 @@
             android:authorities="io.github.ylw6669.chrostar.config"
             android:exported="true" />
 
+        <!-- v2.3.1: 模块覆盖安装后重新应用隐藏桌面图标状态 -->
+        <receiver
+            android:name=".HideIconReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
         <!-- 桌面图标入口（alias）：隐藏桌面图标时只禁用这个组件 -->
         <activity-alias
             android:name=".LauncherAlias"

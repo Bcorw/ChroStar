@@ -6,7 +6,6 @@ import android.content.Context;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
-import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 import java.io.File;
 import java.io.FileWriter;
@@ -33,13 +32,13 @@ public final class LocationAndDiagnostics {
     // PrefService 是公开类(org.chromium.components.prefs.PrefService), 145/152 通用。
     // 注: 不落盘 Chrome 用户设置, 仅 hook 运行时读取, 关闭开关即恢复原行为。
     // ------------------------------------------------------------------
-    public static void hookLocationPrefSource(XC_LoadPackage.LoadPackageParam lpparam) {
+    public static void hookLocationPrefSource(ClassLoader cl) {
         if (!HookEntry.readPrefBoolean(HookEntry.KEY_BYPASS_LOCATION, true)) {
             return;
         }
         try {
             Class<?> prefService = XposedHelpers.findClass(
-                    "org.chromium.components.prefs.PrefService", lpparam.classLoader);
+                    "org.chromium.components.prefs.PrefService", cl);
             // v2.2.1 修正: 实测 pref key 两个:
             //   手机版: "download.prompt_for_download" (boolean, 走 b(String))
             //   电脑式 fork: "download.prompt_for_download_android" (int, 走 c(String))
@@ -87,7 +86,7 @@ public final class LocationAndDiagnostics {
         StringBuilder sb = new StringBuilder();
         sb.append("{\n");
         sb.append("  \"module\": \"ChroStar\",\n");
-        sb.append("  \"moduleVersion\": \"").append("2.2.0").append("\",\n");
+        sb.append("  \"moduleVersion\": \"").append(BuildConfig.VERSION_NAME).append("\",\n");
         sb.append("  \"engineVersion\": \"").append(HookEntry.engineVersion).append("\",\n");
         sb.append("  \"targetPackage\": \"").append(ctx.getPackageName()).append("\",\n");
         sb.append("  \"timestamp\": \"").append(

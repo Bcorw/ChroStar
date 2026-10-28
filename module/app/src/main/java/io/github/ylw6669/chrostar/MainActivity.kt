@@ -1,8 +1,6 @@
 package io.github.ylw6669.chrostar
 
-import android.content.ComponentName
 import android.content.SharedPreferences
-import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -35,6 +33,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences(HookEntry.PREFS_NAME, MODE_PRIVATE)
+        // 覆盖安装/系统重启后组件状态可能被重置, 每次打开设置都按偏好重新应用
+        HideIcon.apply(this, prefs.getBoolean(KEY_HIDE_ICON, false))
         setContent {
             val controller = remember { ThemeController(ColorSchemeMode.System) }
             MiuixTheme(controller = controller) {
@@ -48,6 +48,7 @@ class MainActivity : ComponentActivity() {
 private fun SettingsScreen(prefs: SharedPreferences) {
     var cleanStart by remember { mutableStateOf(prefs.getBoolean(HookEntry.KEY_CLEAN_START, true)) }
     var newTabHome by remember { mutableStateOf(prefs.getBoolean(HookEntry.KEY_NEWTAB_HOME, true)) }
+    var homepageBookmarks by remember { mutableStateOf(prefs.getBoolean(HookEntry.KEY_HOMEPAGE_BOOKMARKS, true)) }
     var bypassDangerous by remember { mutableStateOf(prefs.getBoolean(HookEntry.KEY_BYPASS_DANGEROUS, true)) }
     var bypassInsecure by remember { mutableStateOf(prefs.getBoolean(HookEntry.KEY_BYPASS_INSECURE, true)) }
     var bypassDuplicate by remember { mutableStateOf(prefs.getBoolean(HookEntry.KEY_BYPASS_DUPLICATE, true)) }
@@ -77,6 +78,7 @@ private fun SettingsScreen(prefs: SharedPreferences) {
         prefs.edit()
             .putBoolean(HookEntry.KEY_CLEAN_START, cleanStart)
             .putBoolean(HookEntry.KEY_NEWTAB_HOME, newTabHome)
+            .putBoolean(HookEntry.KEY_HOMEPAGE_BOOKMARKS, homepageBookmarks)
             .putBoolean(HookEntry.KEY_BYPASS_DANGEROUS, bypassDangerous)
             .putBoolean(HookEntry.KEY_BYPASS_INSECURE, bypassInsecure)
             .putBoolean(HookEntry.KEY_BYPASS_DUPLICATE, bypassDuplicate)
@@ -131,6 +133,12 @@ private fun SettingsScreen(prefs: SharedPreferences) {
                     summary = "点击+号打开自定义主页而非默认新标签页",
                     checked = newTabHome,
                     onCheckedChange = { newTabHome = it; save() }
+                )
+                SwitchPreference(
+                    title = "主页显示书签",
+                    summary = "在 Chrome 新标签页底部显示书签启动器（可搜索/按文件夹浏览）",
+                    checked = homepageBookmarks,
+                    onCheckedChange = { homepageBookmarks = it; save() }
                 )
             }
 
@@ -307,19 +315,15 @@ private fun SettingsScreen(prefs: SharedPreferences) {
                     onCheckedChange = { checked ->
                         hideIcon = checked
                         save()
-                        val newState = if (checked) {
-                            PackageManager.COMPONENT_ENABLED_STATE_DISABLED
-                        } else {
-                            PackageManager.COMPONENT_ENABLED_STATE_ENABLED
-                        }
-                        try {
-                            context.packageManager.setComponentEnabledSetting(
-                                ComponentName(context, ".LauncherAlias"),
-                                newState,
-                                PackageManager.DONT_KILL_APP
-                            )
-                        } catch (t: Throwable) {
-                            android.util.Log.e(HookEntry.TAG, "setComponentEnabledSetting failed", t)
+                        if (!HideIcon.apply(context.applicationContext, checked)) {
+                            // 让 UI 与真实组件状态保持一致
+                            hideIcon = HideIcon.isHidden(context)
+                            prefs.edit().putBoolean(KEY_HIDE_ICON, hideIcon).commit()
+                            android.widget.Toast.makeText(
+                                context,
+                                "切换桌面图标失败, 请检查系统权限",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
                         }
                     }
                 )
