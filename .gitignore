@@ -7,6 +7,8 @@ app/build/
 # 密钥与本地配置
 *.keystore
 *.jks
+# 例外: 仓库内签名密钥(公开, 用途与风险见 signing/README.md)
+!signing/chrostar.keystore
 local.properties
 
 # 日志与临时文件

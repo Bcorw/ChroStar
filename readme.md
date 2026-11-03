@@ -169,6 +169,19 @@ Chrome 156 OfflineItem 字段：`s0=state`（完成=2）、`k0=file_path`、`V=t
 
 > 排错：LSPosed 日志过滤 `HomeLauncherLSP` 可看到全部 hook 安装与执行日志。
 
+## 签名
+
+构建使用仓库内的 [`signing/chrostar.keystore`](signing/README.md)，让任何机器、任何一次
+重建都产出**同一签名**——这样新版本可以直接 `adb install -r` 覆盖已安装的旧版，不必卸载
+重装（卸载会丢模块配置和 LSPosed 作用域）。
+
+`signing/keystore.properties` 里的口令是公开的，构建脚本不存在该文件时会回落到 AGP
+默认调试密钥（签名随之改变，旧版无法覆盖）。
+
+> ⚠️ **本仓库公开了签名密钥**：任何人都能签出与官方 Release 一致的 APK，Android 会将其
+> 视为正常更新。请只从本仓库 [Releases](https://github.com/Bcorw/ChroStar/releases) 下载；
+> 需要轮换密钥时见 [`signing/README.md`](signing/README.md)。
+
 ## 构建
 
 ```bash
@@ -178,6 +191,8 @@ gradle assembleRelease
 ```
 
 - minSdk 33 / targetSdk 35 / compose + miuix 0.9.x
+- compileSdk 37 需配 `compileSdkMinor 0`：SDK 把 API 37 落盘为 `platforms/android-37.0`，
+  而 AGP 按 `android-37` 查找，缺了这行会报 `Failed to find target with hash string 'android-37'`
 - 仓库没有 gradle wrapper 时使用系统 Gradle 9.x
 - 签名：debug keystore 即可（模块签名与 Chrome 无关）
 

@@ -3,9 +3,20 @@ plugins {
     id 'org.jetbrains.kotlin.plugin.compose'
 }
 
+// 仓库内签名密钥: 任何机器/任何一次重建都产出同一签名, 已安装版本可直接覆盖升级。
+// 密钥是公开的, 风险与轮换方式见 signing/README.md。
+def signingDir = new File(rootProject.projectDir.parentFile, 'signing')
+def keystorePropsFile = new File(signingDir, 'keystore.properties')
+def keystoreProps = new Properties()
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+def hasRepoKey = keystorePropsFile.exists()
+
 android {
     namespace 'io.github.ylw6669.chrostar'
     compileSdk 37
+    compileSdkMinor 0
 
     defaultConfig {
         applicationId "io.github.ylw6669.chrostar"
@@ -15,13 +26,33 @@ android {
         versionName "2.4.0"
     }
 
+    signingConfigs {
+        if (hasRepoKey) {
+            chrostar {
+                storeFile new File(signingDir, keystoreProps.getProperty('storeFile'))
+                storePassword keystoreProps.getProperty('storePassword')
+                keyAlias keystoreProps.getProperty('keyAlias')
+                keyPassword keystoreProps.getProperty('keyPassword')
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled true
             shrinkResources true
-            // 与 debug 使用同一签名, 便于 LSPosed 覆盖安装更新
-            signingConfig signingConfigs.debug
+            // 优先用仓库内密钥; 缺失时回落到调试密钥(签名会变, 无法覆盖升级)
+            if (hasRepoKey) {
+                signingConfig signingConfigs.chrostar
+            } else {
+                signingConfig signingConfigs.debug
+            }
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            if (hasRepoKey) {
+                signingConfig signingConfigs.chrostar
+            }
         }
     }
 
