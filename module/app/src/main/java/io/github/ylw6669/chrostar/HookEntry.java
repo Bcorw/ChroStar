@@ -171,6 +171,16 @@ public class HookEntry implements IXposedHookLoadPackage {
         return "chrome156".equals(engineVersion);
     }
 
+    /** Chrome 158: isolated splits + R8 短名重排(见 Chrome158.java) */
+    public static boolean is158() {
+        return "chrome158".equals(engineVersion);
+    }
+
+    /** 156/158 共用同一套 isolated-split 运行时语义(仅符号表不同) */
+    public static boolean isSplitModern() {
+        return is156() || is158();
+    }
+
     public static boolean is152() {
         return "chrome152".equals(engineVersion);
     }
@@ -313,9 +323,18 @@ public class HookEntry implements IXposedHookLoadPackage {
             if (sSplitHooksInstalled) {
                 return;
             }
+            if (Chrome158.matches(cl)) {
+                splitClassLoader = cl;
+                engineVersion = "chrome158";
+                XposedBridge.log(TAG + ": split ClassLoader acquired from " + source
+                        + " -> Chrome 158 fingerprint OK");
+                install158Hooks(cl);
+                sSplitHooksInstalled = true;
+                return;
+            }
             if (!Chrome156.matches(cl)) {
                 XposedBridge.log(TAG + ": split CL from " + source
-                        + " but Chrome156 fingerprint mismatch, skip");
+                        + " but neither Chrome156 nor Chrome158 fingerprint matched, skip");
                 return;
             }
             splitClassLoader = cl;
@@ -341,6 +360,21 @@ public class HookEntry implements IXposedHookLoadPackage {
         LocationAndDiagnostics.noteHook("156 isolated-split hooks", true);
         XposedBridge.log(TAG + ": v" + BuildConfig.VERSION_NAME
                 + " hooks installed (156 isolated-split path)");
+    }
+
+    /** Chrome 158: 与 156 同一套业务 hook, 符号表换成 Chrome158 */
+    private static void install158Hooks(ClassLoader cl) {
+        hookTabModelMemory(cl);
+        hookOnStart(cl);
+        HomeCleaner.hookOpenNewTab(cl);
+        DownloadSafetyBypass.hook(cl);
+        AutoInstallApk.hook(cl);
+        BannerController.hook(cl);
+        LocationAndDiagnostics.hookLocationPrefSource(cl);
+        BookmarkHome.hook(cl);
+        LocationAndDiagnostics.noteHook("158 isolated-split hooks", true);
+        XposedBridge.log(TAG + ": v" + BuildConfig.VERSION_NAME
+                + " hooks installed (158 isolated-split path)");
     }
 
     /** 引擎版本判定 */
@@ -442,16 +476,16 @@ public class HookEntry implements IXposedHookLoadPackage {
         try {
             Class<?> bridge = Class.forName(CLS_TAB_MODEL_JNI_BRIDGE, false, cl);
             Method target = null;
-            for (Method m : XposedHelpers.findMethodsByExactParameters(bridge, int.class)) {
-                if (m.getParameterTypes().length == 0 && !m.getName().equals("getCount")) {
-                    target = m;
-                    break;
-                }
+            try {
+                target = bridge.getDeclaredMethod("getCount");
+            } catch (Throwable ignored) {
             }
             if (target == null) {
-                try {
-                    target = bridge.getDeclaredMethod("getCount");
-                } catch (Throwable ignored) {
+                for (Method m : XposedHelpers.findMethodsByExactParameters(bridge, int.class)) {
+                    if (m.getParameterTypes().length == 0 && !m.getName().equals("destroy")) {
+                        target = m;
+                        break;
+                    }
                 }
             }
             if (target == null) {
@@ -511,9 +545,18 @@ public class HookEntry implements IXposedHookLoadPackage {
             return;
         }
         Intent intent = activity.getIntent();
+        if (DEBUG) {
+            XposedBridge.log(TAG + ": [cold] probe action="
+                    + (intent == null ? "null" : intent.getAction())
+                    + " data=" + (intent == null ? "null" : intent.getData())
+                    + " flags=" + (intent == null ? -1 : intent.getFlags()));
+        }
+        // 158: ChromeTabbedActivity 由 Chrome 内部拉起时 action 为 null(launcher 入口),
+        // 因此 action 为空但无 data 同样视为"直接启动", 与 ACTION_MAIN 等价。
         if (intent == null
-                || !Intent.ACTION_MAIN.equals(intent.getAction())
-                || intent.getData() != null) {
+                || intent.getData() != null
+                || (intent.getAction() != null
+                    && !Intent.ACTION_MAIN.equals(intent.getAction()))) {
             return;
         }
         sColdStartProtectUntil = System.currentTimeMillis() + 6000L;

@@ -71,25 +71,30 @@ public final class DownloadSafetyBypass {
         return m.invoke(null, args);
     }
 
-    // v2.3.0: 弹窗枚举 id 按引擎版本分发(156.0.8078.47 jadx 逐类实证)
-    // 156: dangerous allow 47 / deny 48, insecure 2, duplicate 1, policy allow 51 / deny 52, open 9
+    // v2.3.0/v2.4.0: 弹窗枚举 id 按引擎版本分发(156/158 字节码实证, 两版 id 相同)
+    // 156/158: dangerous allow 47 / deny 48, insecure 2, duplicate 1, policy allow 51 / deny 52, open 9
     private static int idDangerous()  {
+        if (HookEntry.is158()) return Chrome158.ID_DANGEROUS_ALLOW;
         if (HookEntry.is156()) return Chrome156.ID_DANGEROUS_ALLOW;
         return HookEntry.is152() ? 43 : 124;
     }
     private static int idInsecure()   {
+        if (HookEntry.is158()) return Chrome158.ID_INSECURE;
         if (HookEntry.is156()) return Chrome156.ID_INSECURE;
         return HookEntry.is152() ? 2 : 3;
     }
     private static int idDuplicate()  {
+        if (HookEntry.is158()) return Chrome158.ID_DUPLICATE;
         if (HookEntry.is156()) return Chrome156.ID_DUPLICATE;
         return HookEntry.is152() ? 1 : 2;
     }
     private static int idPolicy()     {
+        if (HookEntry.is158()) return Chrome158.ID_POLICY_ALLOW;
         if (HookEntry.is156()) return Chrome156.ID_POLICY_ALLOW;
         return HookEntry.is152() ? 47 : 129;
     }
     private static int idOpen()       {
+        if (HookEntry.is158()) return Chrome158.ID_OPEN_KEEP;
         if (HookEntry.is156()) return Chrome156.ID_OPEN_KEEP;
         return HookEntry.is152() ? 9 : 15;
     }
@@ -131,8 +136,49 @@ public final class DownloadSafetyBypass {
         }
     }
 
+    /**
+     * native 指针:
+     *  - 156 及 Insecure/Duplicate/Policy/Location/Open 的 bridge: 字段 a 为 long
+     *  - 158 的 DangerousDownloadDialogBridge: 字段 a 为 JniRawPtr(对象), 需先取内部 long
+     */
     private static long nativePtr(Object bridge) throws Exception {
-        return XposedHelpers.getLongField(bridge, "a");
+        Object v = XposedHelpers.getObjectField(bridge, "a");
+        if (v instanceof Long) {
+            return ((Long) v).longValue();
+        }
+        if (v instanceof Number) {
+            return ((Number) v).longValue();
+        }
+        if (v != null) {
+            // JniRawPtr 实现类内部持有 native long 字段
+            Class<?> c = v.getClass();
+            while (c != null && c != Object.class) {
+                for (java.lang.reflect.Field f : c.getDeclaredFields()) {
+                    if (f.getType() == long.class) {
+                        f.setAccessible(true);
+                        return f.getLong(v);
+                    }
+                }
+                c = c.getSuperclass();
+            }
+            // 兜底: jni_zero 的 JniPtr -> long 帮助方法(158: jee.a(JniPtr)J)
+            try {
+                ClassLoader cl = bridge.getClass().getClassLoader();
+                Class<?> ptrType = Class.forName("org.jni_zero.JniPtr", false, cl);
+                for (java.lang.reflect.Method m : Class.forName("jee", false, cl)
+                        .getDeclaredMethods()) {
+                    if (java.lang.reflect.Modifier.isStatic(m.getModifiers())
+                            && m.getParameterTypes().length == 1
+                            && m.getParameterTypes()[0].isAssignableFrom(v.getClass())
+                            && m.getReturnType() == long.class) {
+                        m.setAccessible(true);
+                        return ((Long) m.invoke(null, v)).longValue();
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        throw new IllegalStateException("native ptr type unsupported: " + v);
     }
 
     // ------------------------------------------------------------------
@@ -142,8 +188,8 @@ public final class DownloadSafetyBypass {
         try {
             Class<?> windowClass = XposedHelpers.findClass(
                     "org.chromium.ui.base.WindowAndroid", cl);
-            // v2.2.1/2.3.0: 152/156 的 showDialog 多一个 boolean 尾参(6→7参)
-            boolean is152 = HookEntry.is152() || HookEntry.is156();
+            // v2.2.1/2.4.0: 152/156/158 的 showDialog 多一个 boolean 尾参(6→7参)
+            boolean is152 = HookEntry.is152() || HookEntry.isSplitModern();
             Object[] paramTypes = is152
                     ? new Object[]{windowClass, String.class, String.class,
                                    long.class, String.class, int.class, boolean.class}

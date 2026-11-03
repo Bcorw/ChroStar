@@ -1,13 +1,13 @@
 # ChroStar
 
 [![Latest release](https://img.shields.io/github/v/release/Bcorw/ChroStar?label=release)](https://github.com/Bcorw/ChroStar/releases/latest)
-[![Chrome](https://img.shields.io/badge/Chrome-156.0.8078.47-4285F4)](https://github.com/Bcorw/ChroStar/releases/latest)
+[![Chrome](https://img.shields.io/badge/Chrome-158.0.8127.2-4285F4)](https://github.com/Bcorw/ChroStar/releases/latest)
 [![LSPosed](https://img.shields.io/badge/LSPosed-API%20102-3DDC84)](https://github.com/Bcorw/ChroStar/releases/latest)
 
 **LSPosed 模块**：让 Chrome 启动直开主页，并接管下载体验。
 
-当前版本 **v2.3.1**，适配 **Chrome 156.0.8078.47（versionCode 807804704，isolated splits）**，
-同时保留 Chrome 152 / 145 旧路径。
+当前版本 **v2.4.0**，适配 **Chrome 158.0.8127.2（versionCode 812700214，isolated splits）**，
+同时保留 Chrome 156 / 152 / 145 旧路径。
 
 > 本仓库是 Chrome 156 适配分支，上游项目为 [ylw6669/ChroStar](https://github.com/ylw6669/ChroStar)
 > （基于上游 v2.2.1 继续开发）。
@@ -15,8 +15,49 @@
 ## 下载
 
 - **最新版本**：[Releases](https://github.com/Bcorw/ChroStar/releases/latest)
-- 当前 APK：`ChroStar-v2.3.1-chrome156.apk`
+- 当前 APK：`ChroStar-v2.4.0-chrome158.apk`
 - 安装：安装 APK → LSPosed 启用模块并勾选 **Google Chrome** → 强制停止 Chrome → 重新打开
+
+## v2.4.0 更新内容（Chrome 158 适配 + 重构）
+
+Chrome 158 的 R8 短名整体重排，v2.3.1 的指纹校验全部落空（日志表现为
+`Chrome156 fingerprint mismatch, skip`），模块完全失效。v2.4.0 重新标定 158 符号，
+并把几处硬编码改为"签名 + 结构"解析：
+
+### 158 符号（对 `split_chrome` / `base` / `split_on_demand` 三个 dex 交叉验证）
+
+| 对象 | 156 | 158 |
+|------|-----|-----|
+| TabModelSelector 实现 | `zor` | `vvr`（`l(Z)` 取常规模型、`i()` 取当前模型、`j()` 取当前标签） |
+| DownloadMessageUiController | `vg8` | `ri8`（`d(OfflineItem,ZZZ)V`） |
+| MessageUiCoordinator | `qvg` | `x0h`（`b(PM,WebContents,I,Z)` / `c(PM,Z)`） |
+| ChromeTabCreator | `ju4` | `jv4`（+ 无痕子类 `hmm`） |
+| 关闭的标签页 Bridge | `ntp.RecentlyClosedBridge` | `recent_tabs.RecentlyClosedBridge`，构造 `(Profile, TabModelSelector)` |
+
+`OfflineItem` 字段（`s0=state(2=完成)`、`k0=path`、`V=title`、`l0=mime`）与下载弹窗
+native 回调 id（47/48/2/1/51/52/9/8）在 158 中保持不变，已由 `z57.onResult`、
+`DownloadDialogBridge.b` 等字节码常量复核。
+
+### 修复
+
+- **冷启动判定**：158 的 `ChromeTabbedActivity` 由 Chrome 内部拉起时 `intent.action == null`，
+  旧逻辑要求 `ACTION_MAIN` 导致清理从不触发；现在 action 为空且无 data 同样按冷启动处理。
+- **关闭标签**：冷启动清理改为直接操作当前 `TabModel`，不再依赖"记忆模型"（158 里
+  `getCount` 的 hook 会误命中 `destroy()`，模型记忆为空）。
+- **复用主页标签**：先扫描已有标签中的 NTP/主页，没有再新建，避免每次冷启动多开一个标签。
+- **浏览保护**：7 秒复查若发现当前标签已被用户导航到其它网址，直接跳过，不再清标签。
+- **native 指针**：158 的 `DangerousDownloadDialogBridge.a` 由 `long` 变成 `JniRawPtr`，
+  `nativePtr()` 改为兼容 long / JniRawPtr（取内部 long 或 `JniPtr→long` 帮助方法）。
+- **PrefService**：下载位置开关改为按 `(String)->boolean/int` 签名绑定，不再依赖 `b`/`c` 短名。
+- **书签面板**：适配 `selector.j()`/`selector.l(false)`、`Tab.r(LoadUrlParams,String)`、
+  `openTabProgrammatically(GURL,int,int)`；158 实测 184 条书签正常展示与打开。
+
+### 158 已知限制
+
+- **「关闭的标签页」清理已停用**：158 直接构造 `RecentlyClosedBridge` 后调用 native
+  `ZIJO/VIJ` 会在主线程触发 SIGSEGV（Chrome 崩溃），已在冷启动路径跳过。
+- **主页固定为新标签页**：158 的 `HomepageManager` 被 R8 内联，默认 prefs 里的
+  `homepage` 是布尔键（写入字符串会让 Chrome 启动崩溃），因此不再读取自定义主页。
 
 ## v2.3.1 更新内容
 
@@ -93,7 +134,7 @@ Chrome Android 不支持扩展，且在该进程内创建 WebView 会崩溃，�
 |------|----|
 | 设备 | Xiaomi 13（2211133C） |
 | 系统 | Android 17 / API 37 |
-| Chrome | 156.0.8078.47（807804704） |
+| Chrome | 158.0.8127.2（812700214） / 156.0.8078.47 兼容 |
 | 框架 | LSPosed 2.2.1（API 102） |
 | Root | KernelSU |
 
@@ -143,6 +184,8 @@ gradle assembleRelease
 ## 已知限制
 
 - 「关闭的标签页」清理使用 Chrome 自身 `RecentlyClosedBridge`；不同 OEM 的时序可能不同。
+  **Chrome 158 起该功能已停用**（native 调用会崩溃）。
+- Chrome 158 的主页固定为新标签页，不读取自定义主页（HomepageManager 已内联）。
 - Chrome 156 未启用「退出时清理」：启动 intent 交接会误触发；由冷启动两轮清理保证只剩主页。
 - 书签启动器只读取本机 Chrome 书签，不读取云端/其他浏览器书签；图标使用首字母色块，未加载 favicon。
 - MIUI/HyperOS 的自启动限制会影响模块进程被 Chrome 冷启动；设置修改后建议保持设置页在后台或先打开一次设置页。

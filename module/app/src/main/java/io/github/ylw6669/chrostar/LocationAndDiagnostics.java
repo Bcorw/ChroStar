@@ -57,8 +57,7 @@ public final class LocationAndDiagnostics {
                     }
                 }
             };
-            XposedBridge.hookAllMethods(prefService, "b", booleanHook);
-            XposedBridge.hookAllMethods(prefService, "c", new XC_MethodHook() {
+            XC_MethodHook intHook = new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
                     try {
@@ -71,8 +70,24 @@ public final class LocationAndDiagnostics {
                     } catch (Throwable ignored) {
                     }
                 }
-            });
-            XposedBridge.log(HookEntry.TAG + ": location prompt source bound (PrefService.getBoolean)");
+            };
+            // v2.4.0: 不再依赖 b/c 短名(158 的 R8 会重排), 改为按签名绑定
+            // (String)->boolean 与 (String)->int 的全部方法, key 命中才改写。
+            int bound = 0;
+            for (java.lang.reflect.Method m : prefService.getDeclaredMethods()) {
+                Class<?>[] ps = m.getParameterTypes();
+                if (ps.length != 1 || ps[0] != String.class) {
+                    continue;
+                }
+                if (m.getReturnType() == boolean.class) {
+                    XposedBridge.hookMethod(m, booleanHook);
+                    bound++;
+                } else if (m.getReturnType() == int.class) {
+                    XposedBridge.hookMethod(m, intHook);
+                    bound++;
+                }
+            }
+            XposedBridge.log(HookEntry.TAG + ": location prompt source bound (" + bound + " methods)");
         } catch (Throwable t) {
             XposedBridge.log(HookEntry.TAG + ": location pref hook failed -> " + t);
         }

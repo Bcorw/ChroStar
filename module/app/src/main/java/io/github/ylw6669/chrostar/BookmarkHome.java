@@ -585,7 +585,9 @@ public final class BookmarkHome {
             try {
                 Object selector = HomeCleaner.findTabModelSelector(activity);
                 if (selector == null) return null;
-                Object tab = XposedHelpers.callMethod(selector, "i");
+                // 158: selector.i() 返回 TabModel, 当前 Tab 是 j(); 156 及以前 i() 即 Tab
+                Object tab = XposedHelpers.callMethod(selector,
+                        HookEntry.is158() ? "j" : "i");
                 if (tab == null) return null;
                 Object incognito = XposedHelpers.callMethod(tab, "isIncognito");
                 if (Boolean.TRUE.equals(incognito)) return null;
@@ -607,15 +609,27 @@ public final class BookmarkHome {
                 Object params = lpCls.getConstructor(String.class, int.class)
                         .newInstance(url, Integer.valueOf(0));
                 Object selector = HomeCleaner.findTabModelSelector(activity);
-                Object tab = selector == null ? null : XposedHelpers.callMethod(selector, "i");
+                Object tab = selector == null ? null
+                        : XposedHelpers.callMethod(selector, HookEntry.is158() ? "j" : "i");
                 if (tab != null) {
-                    XposedHelpers.callMethod(tab, "l", params);
+                    if (HookEntry.is158()) {
+                        // 158: Tab.r(LoadUrlParams, String postData)
+                        XposedHelpers.callMethod(tab, "r", params, (String) null);
+                    } else {
+                        XposedHelpers.callMethod(tab, "l", params);
+                    }
                 } else if (selector != null) {
-                    Object model = XposedHelpers.callMethod(selector, "k", Boolean.FALSE);
+                    Object model = XposedHelpers.callMethod(selector,
+                            HookEntry.is158() ? "l" : "k", Boolean.FALSE);
                     Class<?> gurlCls = Class.forName(CLS_GURL, false, cl);
                     Object gurl = gurlCls.getConstructor(String.class).newInstance(url);
-                    XposedHelpers.callMethod(model, "openTabProgrammatically",
-                            gurl, Integer.valueOf(2), Boolean.FALSE);
+                    if (HookEntry.is158()) {
+                        XposedHelpers.callMethod(model, "openTabProgrammatically",
+                                gurl, Integer.valueOf(2), Integer.valueOf(-1));
+                    } else {
+                        XposedHelpers.callMethod(model, "openTabProgrammatically",
+                                gurl, Integer.valueOf(2), Boolean.FALSE);
+                    }
                 }
                 hide();
                 XposedBridge.log(HookEntry.TAG + ": bookmark open -> " + url);

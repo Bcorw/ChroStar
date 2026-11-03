@@ -57,9 +57,9 @@ public final class AutoInstallApk {
     /** 安装 hook(主进程) */
     public static void hook(ClassLoader cl) {
         OverwriteAndAutoOpen.hookOverwriteDuplicate(cl);
-        if (HookEntry.is156()) {
-            hook156(cl);
-            hookInlineDownloadPath(cl); // 156 兜底: DownloadController.onDownloadCompleted
+        if (HookEntry.isSplitModern()) {
+            hookDownloadMessage(cl);
+            hookInlineDownloadPath(cl); // 兜底: DownloadController.onDownloadCompleted
             return;
         }
         if (HookEntry.is152()) {
@@ -280,12 +280,41 @@ public final class AutoInstallApk {
                                 Object info = param.args[1];
                                 if (info == null) return;
                                 ClassLoader cl = info.getClass().getClassLoader();
-                                String mime = (String) XposedHelpers.getObjectField(info, "c");
-                                // 156: c=mime, e=title, g=file_path; 145: e=path, g=name
-                                String path = (String) XposedHelpers.getObjectField(
-                                        info, HookEntry.is156() ? "g" : "e");
-                                String name = (String) XposedHelpers.getObjectField(
-                                        info, HookEntry.is156() ? "e" : "g");
+                                String mime;
+                                String path;
+                                String name;
+                                if (HookEntry.is158()) {
+                                    // 158 的 DownloadInfo 字段重排: 直接扫描字符串字段,
+                                    // 只认 .apk(含 mime 判定), 避免猜测字段名。
+                                    String apk = null;
+                                    String apkMime = null;
+                                    Class<?> ic = info.getClass();
+                                    for (java.lang.reflect.Field f : ic.getDeclaredFields()) {
+                                        if (f.getType() != String.class) continue;
+                                        f.setAccessible(true);
+                                        Object v = f.get(info);
+                                        if (!(v instanceof String)) continue;
+                                        String sv = (String) v;
+                                        if (sv.contains("/")) {
+                                            if (apkMime == null && sv.contains("package-archive")) {
+                                                apkMime = sv;
+                                            }
+                                            continue;
+                                        }
+                                        if (sv.toLowerCase().endsWith(".apk")) apk = sv;
+                                    }
+                                    if (apk == null) return;
+                                    mime = apkMime != null ? apkMime : APK_MIME;
+                                    path = apk;
+                                    name = new File(apk).getName();
+                                } else {
+                                    mime = (String) XposedHelpers.getObjectField(info, "c");
+                                    // 156: c=mime, e=title, g=file_path; 145: e=path, g=name
+                                    path = (String) XposedHelpers.getObjectField(
+                                            info, HookEntry.is156() ? "g" : "e");
+                                    name = (String) XposedHelpers.getObjectField(
+                                            info, HookEntry.is156() ? "e" : "g");
+                                }
                                 if (!OverwriteAndAutoOpen.shouldAutoOpen(mime, name)) return;
                                 // 真机日志证实: onDownloadCompleted 是下载完成时确定触发的回调,
                                 // 但此时文件可能还在 Chrome 私有临时目录, 尚未复制到公共目录,
@@ -687,9 +716,11 @@ public final class AutoInstallApk {
     // vg8 = DownloadMessageUiController; d(OfflineItem,boolean,boolean,boolean)
     // 完成态 OfflineItem.s0==2(COMPLETE); 字段 k0=file_path, V=title, l0=mime。
     // ------------------------------------------------------------------
-    private static void hook156(ClassLoader cl) {
+    private static void hookDownloadMessage(ClassLoader cl) {
         try {
-            Class<?> vg8 = XposedHelpers.findClass(Chrome156.DOWNLOAD_MESSAGE, cl);
+            final String clsName = HookEntry.is158()
+                    ? Chrome158.DOWNLOAD_MESSAGE : Chrome156.DOWNLOAD_MESSAGE;
+            Class<?> vg8 = XposedHelpers.findClass(clsName, cl);
             Class<?> offlineItemCls = XposedHelpers.findClass(CLS_OFFLINE_ITEM, cl);
             XposedHelpers.findAndHookMethod(vg8, "d", offlineItemCls,
                     boolean.class, boolean.class, boolean.class,
@@ -704,11 +735,14 @@ public final class AutoInstallApk {
                                 Object item = param.args[0];
                                 if (item == null) return;
                                 int state = XposedHelpers.getIntField(item,
-                                        Chrome156.OI_STATE);
-                                if (state != Chrome156.STATE_COMPLETE) return;
-                                String path = tryStringField(item, Chrome156.OI_PATH);
-                                String title = tryStringField(item, Chrome156.OI_TITLE);
-                                String mime = tryStringField(item, Chrome156.OI_MIME);
+                                        HookEntry.is158() ? Chrome158.OI_STATE : Chrome156.OI_STATE);
+                                if (state != Chrome158.STATE_COMPLETE) return;
+                                String path = tryStringField(item, HookEntry.is158()
+                                        ? Chrome158.OI_PATH : Chrome156.OI_PATH);
+                                String title = tryStringField(item, HookEntry.is158()
+                                        ? Chrome158.OI_TITLE : Chrome156.OI_TITLE);
+                                String mime = tryStringField(item, HookEntry.is158()
+                                        ? Chrome158.OI_MIME : Chrome156.OI_MIME);
                                 String name = (title != null && !title.isEmpty()) ? title
                                         : (path != null ? new File(path).getName() : null);
                                 if (!OverwriteAndAutoOpen.shouldAutoOpen(mime, name)
@@ -744,9 +778,9 @@ public final class AutoInstallApk {
                         }
                     });
             XposedBridge.log(HookEntry.TAG
-                    + ": [156] hooked " + Chrome156.DOWNLOAD_MESSAGE + ".d (auto-install/apk)");
+                    + ": hooked " + clsName + ".d (auto-install/apk)");
         } catch (Throwable t) {
-            XposedBridge.log(HookEntry.TAG + ": [156] hook vg8 failed -> " + t);
+            XposedBridge.log(HookEntry.TAG + ": hook DownloadMessageUiController failed -> " + t);
         }
     }
 

@@ -45,6 +45,31 @@ public final class BannerController {
         return HookEntry.is156();
     }
 
+    private static boolean is158() {
+        return HookEntry.is158();
+    }
+
+    /** 156/158 共用同一套业务语义, 只是符号表不同 */
+    private static boolean modern() {
+        return HookEntry.isSplitModern();
+    }
+
+    private static String oiState() {
+        return is158() ? Chrome158.OI_STATE : Chrome156.OI_STATE;
+    }
+
+    private static String oiPath() {
+        return is158() ? Chrome158.OI_PATH : Chrome156.OI_PATH;
+    }
+
+    private static String oiTitle() {
+        return is158() ? Chrome158.OI_TITLE : Chrome156.OI_TITLE;
+    }
+
+    private static String oiMime() {
+        return is158() ? Chrome158.OI_MIME : Chrome156.OI_MIME;
+    }
+
     /** 安装 hook(主进程) */
     public static void hook(ClassLoader cl) {
         hookDownloadBanner(cl);
@@ -133,8 +158,9 @@ public final class BannerController {
     // ------------------------------------------------------------------
     private static void hookDownloadBanner(ClassLoader cl) {
         try {
-            String clsName = is156() ? Chrome156.DOWNLOAD_MESSAGE
-                    : (is152() ? CLS_JE7_152 : CLS_JE7);
+            String clsName = is158() ? Chrome158.DOWNLOAD_MESSAGE
+                    : (is156() ? Chrome156.DOWNLOAD_MESSAGE
+                    : (is152() ? CLS_JE7_152 : CLS_JE7));
             Class<?> je7 = XposedHelpers.findClass(clsName, cl);
             Class<?> offlineItemCls = XposedHelpers.findClass(CLS_OFFLINE_ITEM,
                     cl);
@@ -148,28 +174,28 @@ public final class BannerController {
                                 if (item == null) return;
                                 // 先记录本次更新是否 APK: 下载进度横幅在完成前就已创建,
                                 // 只能靠 OfflineItem 的 mime/title 判断。
-                                if (is156()) {
+                                if (modern()) {
                                     String m = (String) XposedHelpers.getObjectField(
-                                            item, Chrome156.OI_MIME);
+                                            item, oiMime());
                                     String n = (String) XposedHelpers.getObjectField(
-                                            item, Chrome156.OI_TITLE);
+                                            item, oiTitle());
                                     sLastItemApk = HookEntry.isApk(m, n);
                                 }
                                 int state = XposedHelpers.getIntField(item,
-                                        is156() ? Chrome156.OI_STATE
+                                        modern() ? oiState()
                                                 : (is152() ? "q0" : "m0"));
                                 if (HookEntry.DEBUG && is156() && state == 2) {
                                     XposedBridge.log(HookEntry.TAG + ": [156] vg8.d complete title="
                                             + XposedHelpers.getObjectField(item, Chrome156.OI_TITLE));
                                 }
-                                if (is156() ? state != Chrome156.STATE_COMPLETE : state != 2) {
+                                if (state != 2) {
                                     return; // 只处理完成态
                                 }
                                 String mime = (String) XposedHelpers.getObjectField(item,
-                                        is156() ? Chrome156.OI_MIME
+                                        modern() ? oiMime()
                                                 : (is152() ? "j0" : "f0"));
                                 String name = (String) XposedHelpers.getObjectField(item,
-                                        is156() ? Chrome156.OI_TITLE
+                                        modern() ? oiTitle()
                                                 : (is152() ? "T" : "e0"));
                                 boolean isApk = HookEntry.isApk(mime, name);
 
@@ -188,7 +214,7 @@ public final class BannerController {
                                 if (shouldToast) {
                                     // v1.9.9: 从路径提取文件名(而非 e0 title, 后者可能是 URL)
                                     String path = (String) XposedHelpers.getObjectField(item,
-                                            is156() ? Chrome156.OI_PATH
+                                            modern() ? oiPath()
                                                     : (is152() ? "i0" : "P"));
                                     String fileName = null;
                                     if (path != null && !path.isEmpty() && !path.startsWith("content://")) {
@@ -238,8 +264,9 @@ public final class BannerController {
 
     private static void hookNzeC(ClassLoader cl) {
         try {
-            String clsName = is156() ? Chrome156.MESSAGE_UI
-                    : (is152() ? CLS_NZE_152 : CLS_NZE);
+            String clsName = is158() ? Chrome158.MESSAGE_UI
+                    : (is156() ? Chrome156.MESSAGE_UI
+                    : (is152() ? CLS_NZE_152 : CLS_NZE));
             Class<?> nze = XposedHelpers.findClass(clsName, cl);
             Class<?> pmCls = XposedHelpers.findClass(
                     "org.chromium.ui.modelutil.PropertyModel", cl);
@@ -254,8 +281,9 @@ public final class BannerController {
 
     private static void hookNzeB(ClassLoader cl) {
         try {
-            String clsName = is156() ? Chrome156.MESSAGE_UI
-                    : (is152() ? CLS_NZE_152 : CLS_NZE);
+            String clsName = is158() ? Chrome158.MESSAGE_UI
+                    : (is156() ? Chrome156.MESSAGE_UI
+                    : (is152() ? CLS_NZE_152 : CLS_NZE));
             Class<?> nze = XposedHelpers.findClass(clsName, cl);
             Class<?> pmCls = XposedHelpers.findClass(
                     "org.chromium.ui.modelutil.PropertyModel", cl);
