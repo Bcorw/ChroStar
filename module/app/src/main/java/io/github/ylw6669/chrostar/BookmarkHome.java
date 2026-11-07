@@ -1,6 +1,10 @@
 package io.github.ylw6669.chrostar;
 
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
@@ -22,8 +26,10 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
+import android.widget.PopupMenu;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -58,7 +64,7 @@ public final class BookmarkHome {
             "org.chromium.content_public.browser.LoadUrlParams";
 
     private static final int MAX_NODES = 1200;
-    private static final int COLUMNS = 4;
+    private static final int COLUMNS = 2;
 
     private static final Map<Activity, Host> sHosts =
             new WeakHashMap<Activity, Host>();
@@ -146,13 +152,23 @@ public final class BookmarkHome {
         LinearLayout chips;
         LinearLayout list;
         TextView count;
-        TextView crumb;
+        LinearLayout crumbs;
         TextView empty;
         EditText search;
+        View handle;
+        TextView floatBtn;
+
+        /* 导航栈替代单 current：面包屑可跳级 */
+        final List<Node> navStack = new ArrayList<Node>();
+        float panelRatio = 0.42f;
+        boolean hiddenByUser;
 
         final SharedPreferences usage;
         Data data;
-        Node current;
+
+        Node current() {
+            return navStack.isEmpty() ? null : navStack.get(navStack.size() - 1);
+        }
         boolean running;
         boolean attached;
         long dataTime;
@@ -195,7 +211,7 @@ public final class BookmarkHome {
             try {
                 boolean enabled = HookEntry.readPrefBoolean(
                         HookEntry.KEY_HOMEPAGE_BOOKMARKS, true);
-                if (enabled && isNtp(currentUrl())) {
+                if (enabled && !hiddenByUser && isNtp(currentUrl())) {
                     show();
                 } else {
                     hide();
@@ -213,7 +229,8 @@ public final class BookmarkHome {
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT);
                 DisplayMetrics dm = activity.getResources().getDisplayMetrics();
-                lp.topMargin = (int) (dm.heightPixels * 0.38f);
+                panelRatio = usage.getFloat("panel_ratio", 0.42f);
+                lp.topMargin = (int) (dm.heightPixels * (1f - panelRatio));
                 int bottomInset = 0;
                 if (android.os.Build.VERSION.SDK_INT >= 30) {
                     android.view.WindowInsets wi = activity.getWindow()
@@ -230,6 +247,12 @@ public final class BookmarkHome {
                 attached = true;
             }
             panel.bringToFront();
+            if (floatBtn != null) {
+                try {
+                    content.removeView(floatBtn);
+                } catch (Throwable ignored) {
+                }
+            }
             if (data == null || System.currentTimeMillis() - dataTime > 60000L) {
                 loadData();
             }
@@ -253,13 +276,13 @@ public final class BookmarkHome {
             panel.setBackground(panelBackground());
             panel.setElevation(dp(16));
 
-            View handle = new View(activity);
+            handle = new View(activity);
             GradientDrawable handleBg = rounded(dp(2), 0x55808080);
             handle.setBackground(handleBg);
-            LinearLayout.LayoutParams handleLp = new LinearLayout.LayoutParams(dp(38), dp(4));
+            LinearLayout.LayoutParams handleLp = new LinearLayout.LayoutParams(dp(56), dp(20));
             handleLp.gravity = Gravity.CENTER_HORIZONTAL;
-            handleLp.bottomMargin = dp(8);
             panel.addView(handle, handleLp);
+            setupHandleDrag();
 
             LinearLayout header = new LinearLayout(activity);
             header.setOrientation(LinearLayout.HORIZONTAL);
@@ -324,18 +347,11 @@ public final class BookmarkHome {
             chipsLp.bottomMargin = dp(6);
             panel.addView(hsv, chipsLp);
 
-            crumb = text("", 12, colorMuted, false);
-            crumb.setPadding(dp(2), 0, dp(2), dp(6));
-            crumb.setVisibility(View.GONE);
-            crumb.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    current = null;
-                    search.setText("");
-                    renderGrid();
-                }
-            });
-            panel.addView(crumb, new LinearLayout.LayoutParams(
+            crumbs = new LinearLayout(activity);
+            crumbs.setOrientation(LinearLayout.HORIZONTAL);
+            crumbs.setPadding(dp(4), 0, dp(4), dp(6));
+            crumbs.setVisibility(View.GONE);
+            panel.addView(crumbs, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
             ScrollView scroll = new ScrollView(activity);
@@ -368,6 +384,119 @@ public final class BookmarkHome {
             return gd;
         }
 
+        /* ── 拖拽调高 + 单击隐藏 + 浮标恢复 ────────────────────────────── */
+        private void setupHandleDrag() {
+            final float[] downY = {0f};
+            final boolean[] dragging = {false};
+            handle.setOnTouchListener(new View.OnTouchListener() {
+                @Override public boolean onTouch(View v, android.view.MotionEvent ev) {
+                    DisplayMetrics dm = activity.getResources().getDisplayMetrics();
+                    switch (ev.getActionMasked()) {
+                        case android.view.MotionEvent.ACTION_DOWN:
+                            downY[0] = ev.getRawY();
+                            dragging[0] = false;
+                            return true;
+                        case android.view.MotionEvent.ACTION_MOVE:
+                            float dy = ev.getRawY() - downY[0];
+                            if (!dragging[0] && Math.abs(dy) > dp(10)) dragging[0] = true;
+                            if (dragging[0]) {
+                                downY[0] = ev.getRawY();
+                                ViewGroup.LayoutParams lpRaw = panel.getLayoutParams();
+                                if (lpRaw instanceof FrameLayout.LayoutParams) {
+                                    FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) lpRaw;
+                                    lp.topMargin = (int) Math.max(
+                                            dm.heightPixels * 0.10f,
+                                            Math.min(lp.topMargin + dy, dm.heightPixels * 0.70f));
+                                    panel.setLayoutParams(lp);
+                                }
+                            }
+                            return true;
+                        case android.view.MotionEvent.ACTION_UP:
+                            if (dragging[0]) {
+                                DisplayMetrics dm2 = activity.getResources().getDisplayMetrics();
+                                ViewGroup.LayoutParams lpRaw = panel.getLayoutParams();
+                                if (lpRaw instanceof FrameLayout.LayoutParams) {
+                                    FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) lpRaw;
+                                    float ratio = 1f - (float) lp.topMargin / dm2.heightPixels;
+                                    panelRatio = Math.max(0.30f, Math.min(0.90f, ratio));
+                                    usage.edit().putFloat("panel_ratio", panelRatio).apply();
+                                }
+                            } else {
+                                toggleHide();
+                            }
+                            return true;
+                    }
+                    return false;
+                }
+            });
+        }
+
+        /* 单击手柄隐藏面板，NTP 右下角留一枚书签浮钮，点击恢复 */
+        private void toggleHide() {
+            hiddenByUser = true;
+            hide();
+            if (floatBtn != null) return;
+            floatBtn = text("\u2605", 18, Color.WHITE, true);
+            floatBtn.setGravity(Gravity.CENTER);
+            floatBtn.setBackground(rounded(dp(20), colorAccent));
+            floatBtn.setElevation(dp(10));
+            floatBtn.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    hiddenByUser = false;
+                    show();
+                }
+            });
+            try {
+                FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(dp(40), dp(40));
+                lp.gravity = Gravity.BOTTOM | Gravity.END;
+                int inset = 0;
+                if (android.os.Build.VERSION.SDK_INT >= 30) {
+                    android.view.WindowInsets wi = activity.getWindow()
+                            .getDecorView().getRootWindowInsets();
+                    if (wi != null) inset = wi.getInsets(
+                            android.view.WindowInsets.Type.navigationBars()).bottom;
+                }
+                lp.bottomMargin = Math.max(inset, dp(12)) + dp(18);
+                lp.rightMargin = dp(16);
+                content.addView(floatBtn, lp);
+            } catch (Throwable ignored) {
+            }
+        }
+
+        /* ── 面包屑导航（栈渲染，点段跳级） ────────────────────────────── */
+        private void renderCrumbs() {
+            if (crumbs == null) return;
+            crumbs.removeAllViews();
+            if (navStack.isEmpty()) {
+                crumbs.setVisibility(View.GONE);
+                return;
+            }
+            crumbs.setVisibility(View.VISIBLE);
+            crumbs.addView(crumbSeg("\u9996\u9875", -1));
+            for (int i = 0; i < navStack.size(); i++) {
+                TextView sep = text(" \u203a ", 12, colorMuted, false);
+                crumbs.addView(sep);
+                crumbs.addView(crumbSeg(navStack.get(i).title, i));
+            }
+        }
+
+        private TextView crumbSeg(String label, final int index) {
+            TextView t = text(label, 12, index == navStack.size() - 1 ? colorText : colorMuted,
+                    index == navStack.size() - 1);
+            t.setPadding(dp(2), dp(3), dp(2), dp(3));
+            if (index < navStack.size() - 1 || index == -1) {
+                t.setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        while (navStack.size() > index + 1) navStack.remove(navStack.size() - 1);
+                        if (search != null) search.setText("");
+                        renderCrumbs();
+                        renderGrid();
+                    }
+                });
+            }
+            return t;
+        }
+
         void loadData() {
             try {
                 Data d = buildData(activity.getClass().getClassLoader());
@@ -385,7 +514,7 @@ public final class BookmarkHome {
                 }
                 data = d;
                 dataTime = System.currentTimeMillis();
-                current = null;
+                navStack.clear();
                 if (search != null) search.setText("");
                 renderChips();
                 renderGrid();
@@ -396,19 +525,20 @@ public final class BookmarkHome {
 
         private void renderChips() {
             chips.removeAllViews();
-            addChip("全部", current == null, new View.OnClickListener() {
+            addChip("全部", current() == null, new View.OnClickListener() {
                 @Override public void onClick(View v) {
-                    current = null;
+                    navStack.clear();
                     if (search != null) search.setText("");
                     renderChips();
+                    renderCrumbs();
                     renderGrid();
                 }
             });
             if (data == null) return;
             for (final Node f : data.folders) {
-                addChip(f.title, current == f, new View.OnClickListener() {
+                addChip(f.title, current() == f, new View.OnClickListener() {
                     @Override public void onClick(View v) {
-                        current = f;
+                        navStack.clear(); navStack.add(f);
                         if (search != null) search.setText("");
                         renderChips();
                         renderGrid();
@@ -429,37 +559,65 @@ public final class BookmarkHome {
             chips.addView(chip, lp);
         }
 
+        /* ── Tabmark 逻辑：权重搜索 + 文件夹聚合分节视图 ────────────────── */
+
+        /* Tabmark matchScore: 标题前缀100 / 标题包含60 / 域名前缀45 /
+           域名包含35 / URL包含20；文件夹只按名称包含50。 */
+        private int matchScore(Node n, String q) {
+            if (q.isEmpty()) return 0;
+            String title = (n.title == null ? "" : n.title).toLowerCase();
+            int s = 0;
+            if (n.folder) {
+                return title.contains(q) ? 50 : 0;
+            }
+            String url = n.url == null ? "" : n.url.toLowerCase();
+            String host = n.host == null ? "" : n.host.toLowerCase();
+            if (title.startsWith(q)) s = 100;
+            else if (title.contains(q)) s = 60;
+            if (host.startsWith(q)) s = Math.max(s, 45);
+            else if (host.contains(q)) s = Math.max(s, 35);
+            if (s == 0 && url.contains(q)) s = 20;
+            return s;
+        }
+
+        /* Tabmark byScore: 分数降序 -> 使用次数降序 -> 原始顺序 */
+        private void sortByScore(List<Node> items, final String q) {
+            Collections.sort(items, new Comparator<Node>() {
+                @Override public int compare(Node a, Node b) {
+                    int sa = matchScore(a, q), sb = matchScore(b, q);
+                    if (sa != sb) return sb - sa;
+                    int ca = usage(a.url), cb = usage(b.url);
+                    if (ca != cb) return cb - ca;
+                    return 0;
+                }
+            });
+        }
+
         private void renderGrid() {
             if (list == null) return;
             list.removeAllViews();
-            if (crumb != null) {
-                if (current != null) {
-                    crumb.setVisibility(View.VISIBLE);
-                    crumb.setText("\u2190  " + current.title);
-                } else {
-                    crumb.setVisibility(View.GONE);
-                }
-            }
+            renderCrumbs();
             if (data == null) {
                 empty.setVisibility(View.VISIBLE);
                 empty.setText("正在读取 Chrome 书签…");
                 return;
             }
+            String q = searchText();
             List<Node> items;
-            String q = search == null ? "" : search.getText().toString().trim().toLowerCase();
             if (!TextUtils.isEmpty(q)) {
+                // 搜索：全库权重排序（Tabmark searchBookmarks）
                 items = new ArrayList<Node>();
                 for (Node n : data.all) {
-                    if (n.title != null && n.title.toLowerCase().contains(q)) {
-                        items.add(n);
-                    } else if (n.url != null && n.url.toLowerCase().contains(q)) {
-                        items.add(n);
-                    }
+                    if (matchScore(n, q) > 0) items.add(n);
                 }
-            } else if (current != null) {
-                items = current.children;
+                sortByScore(items, q);
+                renderCardGrid(items);
+            } else if (current() != null) {
+                // 聚合视图：按子路径分节铺开（含嵌套）
+                count.setText(" \u00b7 " + countDirectBookmarks(current()));
+                renderAggregate(current());
             } else {
-                // 全部视图按使用频率/最近点击排序, 模拟 Markoob 的推荐逻辑
+                // 全部视图：按使用频率/最近点击（模拟 Tabmark 本地推荐）
                 items = new ArrayList<Node>(data.all);
                 Collections.sort(items, new Comparator<Node>() {
                     @Override public int compare(Node a, Node b) {
@@ -470,13 +628,97 @@ public final class BookmarkHome {
                         return 0;
                     }
                 });
+                count.setText(" \u00b7 " + data.all.size());
+                // 首页直达：常用书签（使用过的）置顶成节，其余跟后
+                List<Node> frequent = new ArrayList<Node>();
+                List<Node> rest = new ArrayList<Node>();
+                for (Node n : items) {
+                    if (usage(n.url) > 0 && frequent.size() < 8) frequent.add(n);
+                    else rest.add(n);
+                }
+                if (!frequent.isEmpty()) {
+                    LinearLayout head = new LinearLayout(activity);
+                    head.setOrientation(LinearLayout.HORIZONTAL);
+                    head.setGravity(Gravity.CENTER_VERTICAL);
+                    head.setPadding(dp(2), dp(8), dp(2), dp(4));
+                    head.addView(text("\u5e38\u7528", 13, colorText, true));
+                    TextView fc = text(" \u00b7 \u4e00\u952e\u76f4\u8fbe", 11, colorMuted, false);
+                    LinearLayout.LayoutParams fcLp = new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    fcLp.leftMargin = dp(6);
+                    head.addView(fc, fcLp);
+                    list.addView(head, new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                    renderCardGrid(frequent);
+                    LinearLayout head2 = new LinearLayout(activity);
+                    head2.setOrientation(LinearLayout.HORIZONTAL);
+                    head2.setGravity(Gravity.CENTER_VERTICAL);
+                    head2.setPadding(dp(2), dp(10), dp(2), dp(4));
+                    head2.addView(text("\u5168\u90e8\u4e66\u7b7e", 13, colorText, true));
+                    TextView rc = text(" \u00b7 " + rest.size(), 12, colorMuted, false);
+                    LinearLayout.LayoutParams rcLp = new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    rcLp.leftMargin = dp(6);
+                    head2.addView(rc, rcLp);
+                    list.addView(head2, new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                }
+                renderCardGrid(rest);
             }
-            count.setText(" \u00b7 " + data.all.size());
-            empty.setVisibility(items.isEmpty() ? View.VISIBLE : View.GONE);
-            if (items.isEmpty()) {
-                empty.setText(TextUtils.isEmpty(q) ? "还没有书签" : "没有匹配的书签");
-                return;
+            empty.setVisibility(View.GONE);
+        }
+
+        private String searchText() {
+            return search == null ? "" : search.getText().toString().trim().toLowerCase();
+        }
+
+        private int countDirectBookmarks(Node folder) {
+            int c = 0;
+            for (Node n : folder.children) if (!n.folder) c++;
+            return c;
+        }
+
+        /* 聚合视图：本层直接书签成一节（无标题），每个子文件夹深度优先
+           展开成一节（节标题 = 相对路径，随层级缩进）—— Tabmark 的
+           文件夹聚合视图逻辑。 */
+        private void renderAggregate(Node folder) {
+            List<Node> direct = new ArrayList<Node>();
+            for (Node n : folder.children) if (!n.folder) direct.add(n);
+            if (!direct.isEmpty()) {
+                renderCardGrid(direct);
             }
+            for (Node c : folder.children) {
+                if (c.folder) walkSections(c.children, c.title, 0);
+            }
+        }
+
+        private void walkSections(List<Node> children, String path, int depth) {
+            List<Node> direct = new ArrayList<Node>();
+            for (Node n : children) if (!n.folder) direct.add(n);
+            for (Node c : children) {
+                if (c.folder) walkSections(c.children, path + " / " + c.title, depth + 1);
+            }
+            if (direct.isEmpty()) return;
+            // 节标题（对齐 Tabmark sec-head）：路径 + 计数，随层级缩进
+            LinearLayout head = new LinearLayout(activity);
+            head.setOrientation(LinearLayout.HORIZONTAL);
+            head.setGravity(Gravity.CENTER_VERTICAL);
+            head.setPadding(dp(2) + dp(10) * depth, dp(10), dp(2), dp(4));
+            TextView st = text(path, 13, colorText, true);
+            head.addView(st);
+            TextView sc = text(" \u00b7 " + direct.size(), 12, colorMuted, false);
+            LinearLayout.LayoutParams scLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            scLp.leftMargin = dp(6);
+            head.addView(sc, scLp);
+            list.addView(head, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            renderCardGrid(direct);
+        }
+
+        /* 2 列横版卡片网格（Tabmark 桌面卡片布局） */
+        private void renderCardGrid(List<Node> items) {
+            if (items.isEmpty()) return;
             for (int i = 0; i < items.size(); i += COLUMNS) {
                 LinearLayout row = new LinearLayout(activity);
                 row.setOrientation(LinearLayout.HORIZONTAL);
@@ -500,52 +742,58 @@ public final class BookmarkHome {
 
         private View createCard(final Node n) {
             LinearLayout card = new LinearLayout(activity);
-            card.setOrientation(LinearLayout.VERTICAL);
-            card.setGravity(Gravity.CENTER_HORIZONTAL);
-            card.setPadding(dp(5), dp(10), dp(5), dp(8));
-            card.setMinimumHeight(dp(104));
+            card.setOrientation(LinearLayout.HORIZONTAL);
+            card.setGravity(Gravity.CENTER_VERTICAL);
+            card.setPadding(dp(9), dp(8), dp(9), dp(8));
+            card.setMinimumHeight(dp(56));
             card.setClickable(true);
             card.setBackground(cardBackground());
 
             TextView icon = new TextView(activity);
             icon.setGravity(Gravity.CENTER);
-            icon.setTextSize(TypedValue.COMPLEX_UNIT_SP, n.folder ? 20 : 15);
+            icon.setTextSize(TypedValue.COMPLEX_UNIT_SP, n.folder ? 16 : 14);
             icon.setTextColor(Color.WHITE);
             if (n.folder) {
-                icon.setText("\ud83d\udcc1");
+                icon.setText("\u25b8");
+                icon.setTypeface(Typeface.DEFAULT_BOLD);
                 icon.setBackground(rounded(dp(10), 0xFFE9A23B));
             } else {
-                char c = (n.title == null || n.title.isEmpty()) ? '?' : n.title.charAt(0);
-                icon.setText(String.valueOf(Character.toUpperCase(c)));
+                char ch = (n.title == null || n.title.isEmpty()) ? '?' : n.title.charAt(0);
+                icon.setText(String.valueOf(Character.toUpperCase(ch)));
                 icon.setTypeface(Typeface.DEFAULT_BOLD);
                 icon.setBackground(rounded(dp(10), colorFor(n.url)));
             }
             LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(34), dp(34));
-            iconLp.bottomMargin = dp(7);
+            iconLp.rightMargin = dp(10);
             card.addView(icon, iconLp);
 
-            TextView title = text(n.title == null ? "" : n.title, 12, colorText, false);
-            title.setMaxLines(2);
+            LinearLayout texts = new LinearLayout(activity);
+            texts.setOrientation(LinearLayout.VERTICAL);
+
+            TextView title = text(n.title == null ? "" : n.title, 13, colorText, false);
+            title.setTypeface(Typeface.DEFAULT_BOLD);
+            title.setMaxLines(1);
             title.setEllipsize(TextUtils.TruncateAt.END);
-            title.setGravity(Gravity.CENTER);
-            title.setLineSpacing(0f, 1.08f);
-            card.addView(title, new LinearLayout.LayoutParams(
+            title.setLetterSpacing(-0.01f);
+            texts.addView(title, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-            TextView host = text(n.folder ? n.children.size() + " 项" : n.host, 10,
+            TextView host = text(n.folder ? n.children.size() + " 项" : n.host, 11,
                     colorMuted, false);
             host.setMaxLines(1);
             host.setEllipsize(TextUtils.TruncateAt.END);
-            host.setGravity(Gravity.CENTER);
             LinearLayout.LayoutParams hostLp = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            hostLp.topMargin = dp(3);
-            card.addView(host, hostLp);
+            hostLp.topMargin = dp(2);
+            texts.addView(host, hostLp);
+
+            card.addView(texts, new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
             card.setOnClickListener(new View.OnClickListener() {
                 @Override public void onClick(View v) {
                     if (n.folder) {
-                        current = n;
+                        navStack.add(n);
                         if (search != null) search.setText("");
                         renderChips();
                         renderGrid();
@@ -555,7 +803,81 @@ public final class BookmarkHome {
                     }
                 }
             });
+            card.setOnLongClickListener(new View.OnLongClickListener() {
+                @Override public boolean onLongClick(View v) {
+                    if (n.folder) return false;
+                    showBookmarkMenu(v, n);
+                    return true;
+                }
+            });
             return card;
+        }
+
+        /* ── 长按书签卡片: 复制链接 / 分享 / 复制标题 ──────────────────────── */
+        private void showBookmarkMenu(View anchor, final Node n) {
+            try {
+                PopupMenu menu = new PopupMenu(activity, anchor);
+                menu.getMenu().add(0, 1, 0, "\u590d\u5236\u94fe\u63a5");
+                menu.getMenu().add(0, 2, 0, "\u5206\u4eab\u94fe\u63a5");
+                menu.getMenu().add(0, 3, 0, "\u590d\u5236\u6807\u9898");
+                menu.setOnMenuItemClickListener(new PopupMenu.OnMenuItemClickListener() {
+                    @Override public boolean onMenuItemClick(android.view.MenuItem item) {
+                        switch (item.getItemId()) {
+                            case 1:
+                                copyText(n.url);
+                                toast("\u5df2\u590d\u5236\u94fe\u63a5");
+                                break;
+                            case 2:
+                                shareUrl(n.title, n.url);
+                                break;
+                            case 3:
+                                copyText(n.title);
+                                toast("\u5df2\u590d\u5236\u6807\u9898");
+                                break;
+                            default:
+                                break;
+                        }
+                        return true;
+                    }
+                });
+                menu.show();
+            } catch (Throwable t) {
+                XposedBridge.log(HookEntry.TAG + ": bookmark menu -> " + t);
+            }
+        }
+
+        private void copyText(String text) {
+            if (text == null || text.isEmpty()) return;
+            try {
+                ClipboardManager cm = (ClipboardManager) activity
+                        .getSystemService(Context.CLIPBOARD_SERVICE);
+                if (cm != null) {
+                    cm.setPrimaryClip(ClipData.newPlainText("tabmark", text));
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+
+        private void shareUrl(String title, String url) {
+            if (url == null) return;
+            try {
+                Intent send = new Intent(Intent.ACTION_SEND);
+                send.setType("text/plain");
+                send.putExtra(Intent.EXTRA_TEXT, url);
+                if (title != null && !title.isEmpty()) {
+                    send.putExtra(Intent.EXTRA_SUBJECT, title);
+                }
+                activity.startActivity(Intent.createChooser(send, "\u5206\u4eab\u94fe\u63a5"));
+            } catch (Throwable t) {
+                XposedBridge.log(HookEntry.TAG + ": bookmark share -> " + t);
+            }
+        }
+
+        private void toast(String msg) {
+            try {
+                Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show();
+            } catch (Throwable ignored) {
+            }
         }
 
         private int usage(String url) {
@@ -577,7 +899,7 @@ public final class BookmarkHome {
         }
 
         private RippleDrawable cardBackground() {
-            GradientDrawable content = rounded(dp(16), colorCard);
+            GradientDrawable content = rounded(dp(14), colorCard);
             return new RippleDrawable(ColorStateList.valueOf(0x22808080), content, null);
         }
 
@@ -658,14 +980,15 @@ public final class BookmarkHome {
             return gd;
         }
 
+        /* Tabmark 的 hue 色块：h*31 哈希 -> HSL 柔和底色，白字首字母 */
         int colorFor(String url) {
             int h = 0;
             if (url != null) {
                 for (int i = 0; i < url.length(); i++) h = h * 31 + url.charAt(i);
             }
-            int[] palette = {0xFF4285F4, 0xFFEA4335, 0xFF34A853, 0xFFFBBC05,
-                    0xFF7E57C2, 0xFF00897B, 0xFFEF6C00};
-            return palette[Math.abs(h) % palette.length];
+            float hue = Math.abs(h) % 360;
+            float[] hsv = {hue, 0.42f, 0.62f};
+            return Color.HSVToColor(0xFF, hsv);
         }
     }
 

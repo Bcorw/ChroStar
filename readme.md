@@ -1,13 +1,13 @@
 # ChroStar
 
 [![Latest release](https://img.shields.io/github/v/release/Bcorw/ChroStar?label=release)](https://github.com/Bcorw/ChroStar/releases/latest)
-[![Chrome](https://img.shields.io/badge/Chrome-158.0.8127.2-4285F4)](https://github.com/Bcorw/ChroStar/releases/latest)
+[![Chrome](https://img.shields.io/badge/Chrome-156%20%7C%20158-4285F4)](https://github.com/Bcorw/ChroStar/releases/latest)
 [![LSPosed](https://img.shields.io/badge/LSPosed-API%20102-3DDC84)](https://github.com/Bcorw/ChroStar/releases/latest)
 
 **LSPosed 模块**：让 Chrome 启动直开主页，并接管下载体验。
 
-当前版本 **v2.4.0**，适配 **Chrome 158.0.8127.2（versionCode 812700214，isolated splits）**，
-同时保留 Chrome 156 / 152 / 145 旧路径。
+当前版本 **v2.5.0**，实测适配 **Chrome 156.0.8078.79**，
+同时保留 Chrome 158 / 152 / 145 路径（158 为 v2.4.0 标定，未随本轮重测）。
 
 > 本仓库是 Chrome 156 适配分支，上游项目为 [ylw6669/ChroStar](https://github.com/ylw6669/ChroStar)
 > （基于上游 v2.2.1 继续开发）。
@@ -15,8 +15,29 @@
 ## 下载
 
 - **最新版本**：[Releases](https://github.com/Bcorw/ChroStar/releases/latest)
-- 当前 APK：`ChroStar-v2.4.0-chrome158.apk`
+- 当前 APK：`ChroStar-v2.5.0-chrome156.apk`
 - 安装：安装 APK → LSPosed 启用模块并勾选 **Google Chrome** → 强制停止 Chrome → 重新打开
+
+## v2.5.0 更新内容（书签启动器体验升级 + Chrome 156 全功能核查）
+
+### 书签启动器（主页显示书签）
+
+- **面板高度可拖拽**：顶部手柄上下拖动调节面板高度（30%–90% 屏高），位置记忆；
+- **可隐藏**：单击手柄收起面板，NTP 右下角出现 ★ 浮钮，点击恢复；
+- **首页直达**：打开面板先看「常用 · 一键直达」节（按使用频次取前 8 个），下方才是「全部书签」；
+- **面包屑导航**：文件夹路径 `首页 › 学习 › AI 工具`，点任意段直接跳级；
+- **长按书签卡片**：弹出菜单 —— 复制链接 / 分享链接 / 复制标题；
+- Tabmark 风格视觉：URL 哈希 hue 柔和色块 + 白字首字母、2 列横版卡片、
+  权重搜索（标题前缀 100 / 包含 60 / 域名前缀 45 / 包含 35 / URL 20 + 使用频次）、
+  文件夹聚合分节视图。
+
+### 功能核查（Chrome 156.0.8078.79 真机）
+
+- 冷启动清理 / +开主页 / 书签面板 / 6 类下载弹窗绕过 / APK 自动安装 /
+  横幅控制 / 翻译横幅隐藏 / 覆盖重复下载 / 自动打开文件 / 位置诊断 —— hook 全部安装成功；
+- 修复 `TabModelJniBridge.getCount` abstract 方法 hook 报错（跳过 abstract，
+  改用签名匹配的具体方法，模型记忆恢复工作）；
+- 移除从未被调用的死代码 `hookExitCleanup`。
 
 ## v2.4.0 更新内容（Chrome 158 适配 + 重构）
 
@@ -112,9 +133,12 @@ native 回调 id（47/48/2/1/51/52/9/8）在 158 中保持不变，已由 `z57.o
 Chrome Android 不支持扩展，且在该进程内创建 WebView 会崩溃，因此使用**原生 View 面板**：
 
 - 位于 NTP 下半部分，保留顶部 Google 搜索框和 AI/无痕模式按钮；
-- 读取 Chrome `BookmarkModel`（本机实测约 182 个书签）；
-- 「全部」按使用频率/最近点击排序；文件夹 chip 可进入/返回；搜索支持标题与 URL；
+- 顶部手柄可上下拖拽调节面板高度（30%–90%，位置记忆），单击收起、右下角 ★ 浮钮恢复；
+- 读取 Chrome `BookmarkModel`（本机实测约 188 个书签）；
+- 「常用 · 一键直达」按使用频次置顶；文件夹 chip / 面包屑路径双导航；
+- 搜索支持标题与 URL，按 Tabmark 权重排序（标题前缀 > 包含 > 域名 > URL + 使用频次）；
 - 点击书签调用 `Tab.l(LoadUrlParams)` 在当前标签打开；
+- **长按书签卡片**：复制链接 / 分享链接 / 复制标题；
 - 无痕标签页不显示书签面板。
 
 设置页开关：**启动行为 → 主页显示书签**。
@@ -134,7 +158,7 @@ Chrome Android 不支持扩展，且在该进程内创建 WebView 会崩溃，�
 |------|----|
 | 设备 | Xiaomi 13（2211133C） |
 | 系统 | Android 17 / API 37 |
-| Chrome | 158.0.8127.2（812700214） / 156.0.8078.47 兼容 |
+| Chrome | 156.0.8078.79（807807904，v2.5.0 实测） / 158.0.8127.2（812700214，v2.4.0 标定） |
 | 框架 | LSPosed 2.2.1（API 102） |
 | Root | KernelSU |
 

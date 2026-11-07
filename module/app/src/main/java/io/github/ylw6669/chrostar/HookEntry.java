@@ -480,16 +480,24 @@ public class HookEntry implements IXposedHookLoadPackage {
                 target = bridge.getDeclaredMethod("getCount");
             } catch (Throwable ignored) {
             }
+            // TabModelJniBridge#getCount 是 abstract, 无法直接 hook; 156 上
+            // 模型记忆已由 findTabModelSelector(activity 字段) 兜底, 这里跳过
+            // abstract 方法, 避免每次启动刷一条 "Cannot hook abstract" 错误。
+            if (target != null && java.lang.reflect.Modifier.isAbstract(target.getModifiers())) {
+                target = null;
+            }
             if (target == null) {
                 for (Method m : XposedHelpers.findMethodsByExactParameters(bridge, int.class)) {
-                    if (m.getParameterTypes().length == 0 && !m.getName().equals("destroy")) {
+                    if (m.getParameterTypes().length == 0 && !m.getName().equals("destroy")
+                            && !java.lang.reflect.Modifier.isAbstract(m.getModifiers())) {
                         target = m;
                         break;
                     }
                 }
             }
             if (target == null) {
-                XposedBridge.log(TAG + ": getCount-like method not found on TabModelJniBridge");
+                XposedBridge.log(TAG + ": no concrete getCount on TabModelJniBridge, "
+                        + "model memory via selector fallback");
                 return;
             }
             final Method finalTarget = target;
@@ -581,31 +589,6 @@ public class HookEntry implements IXposedHookLoadPackage {
             }
         }, 7000L);
         XposedBridge.log(TAG + ": cold start(MAIN) detected, cleanup scheduled (3s + 7s)");
-    }
-
-    /** Hook 4: 退出清理(Activity 正在 finish 时关闭全部标签) */
-    private static void hookExitCleanup(ClassLoader cl) {
-        try {
-            // 156 的 ChromeTabbedActivity 没有覆写 onDestroy, 用它自己的 onStop 并在
-            // isFinishing() 时清理(此时 TabModel 仍然有效)
-            XposedHelpers.findAndHookMethod(CLS_CHROME_TABBED_ACTIVITY, cl,
-                    "onStop", new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            try {
-                                Activity activity = (Activity) param.thisObject;
-                                if (activity != null && activity.isFinishing()) {
-                                    HomeCleaner.exitCleanup(activity);
-                                }
-                            } catch (Throwable t) {
-                                XposedBridge.log(TAG + ": exit cleanup error -> " + t);
-                            }
-                        }
-                    });
-            XposedBridge.log(TAG + ": hooked ChromeTabbedActivity.onStop() [exit cleanup]");
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + ": hook onStop(exit cleanup) failed -> " + t);
-        }
     }
 
     // ------------------------------------------------------------------

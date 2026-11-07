@@ -136,7 +136,7 @@ private fun SettingsScreen(prefs: SharedPreferences) {
                 )
                 SwitchPreference(
                     title = "主页显示书签",
-                    summary = "在 Chrome 新标签页底部显示书签启动器（可搜索/按文件夹浏览）",
+                    summary = "在新标签页底部显示书签面板（可搜索/按文件夹浏览，长按书签可复制/分享）",
                     checked = homepageBookmarks,
                     onCheckedChange = { homepageBookmarks = it; save() }
                 )
