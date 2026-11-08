@@ -6,7 +6,7 @@
 
 **LSPosed 模块**：让 Chrome 启动直开主页，并接管下载体验。
 
-当前版本 **v2.5.0**，实测适配 **Chrome 156.0.8078.79**，
+当前版本 **v2.5.1**，实测适配 **Chrome 156.0.8078.79**，
 同时保留 Chrome 158 / 152 / 145 路径（158 为 v2.4.0 标定，未随本轮重测）。
 
 > 本仓库是 Chrome 156 适配分支，上游项目为 [ylw6669/ChroStar](https://github.com/ylw6669/ChroStar)
@@ -15,8 +15,41 @@
 ## 下载
 
 - **最新版本**：[Releases](https://github.com/Bcorw/ChroStar/releases/latest)
-- 当前 APK：`ChroStar-v2.5.0-chrome156.apk`
+- 当前 APK：`ChroStar-v2.5.1-chrome156.apk`
 - 安装：安装 APK → LSPosed 启用模块并勾选 **Google Chrome** → 强制停止 Chrome → 重新打开
+
+## v2.5.1 更新内容（修复书签漏读：账号「其他书签」全部丢失）
+
+### 问题
+
+Chrome 原生书签页显示账号书签 214 条（书签栏 184 + 其他书签 25 + 移动设备 5），
+模块只显示 188 条，且 chips 里没有「其他书签」下的文件夹。
+
+### 根因（反编译 `split_chrome.apk` + `BookmarkBridge` 字节码确认）
+
+Chrome 156 的 `BookmarkBridge` 有 **10 个**无参返回 `BookmarkId` 的根 getter，
+它们都走 native 分派 `J.N.OJ(int id, long ptr)`，ID 为 19/20/22/23/24/25/26/27/28/30。
+并且 **账号书签与本地书签是两套根**：
+
+| 分组 | 根 | BookmarkId |
+|---|---|---|
+| Google 账号 | 书签栏 / 移动设备书签 / 阅读清单 | 5 / 7 / r1 |
+| 仅本设备 | 书签栏 / 其他书签 / 移动设备书签 / 阅读清单 | 1 / 2 / 3 / r0 |
+| 汇总 | root（children = 全部根） | 0（native id 30） |
+
+旧代码只取 `g/o/q/r` 四个 getter，而**账号「其他书签」没有独立 Java getter**
+（对应 `t` 被 R8 内联，`getMethods()` / `getDeclaredMethods()` 都取不到），
+只能从 root 汇总节点（native id 30）的 children 里拿 —— 这就是 25 条书签
+整根丢失的原因。
+
+### 修复
+
+1. 直接调用 native 分派 `J.N.OJ(id, ptr)` 取根，绕开 R8 内联导致的反射取不到；
+2. 取 root 汇总节点的 children，排除本地根（native 25~28），得到账号全部根；
+3. `addNode` 用 `BookmarkId` 去重，避免 root / 子根重叠时重复计数。
+
+**实测：188 → 214 条**，与 Chrome 原生书签页 184 + 25 + 5 完全一致，
+chips 补回「娱乐 / 购物 / 其他」等文件夹。
 
 ## v2.5.0 更新内容（书签启动器体验升级 + Chrome 156 全功能核查）
 
