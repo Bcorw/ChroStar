@@ -22,8 +22,8 @@ android {
         applicationId "io.github.ylw6669.chrostar"
         minSdk 33
         targetSdk 34
-        versionCode 83
-        versionName "2.5.0"
+        versionCode 84
+        versionName "2.5.1"
     }
 
     signingConfigs {

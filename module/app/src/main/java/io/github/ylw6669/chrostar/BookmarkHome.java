@@ -37,9 +37,11 @@ import de.robv.android.xposed.XposedHelpers;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.WeakHashMap;
 
 /**
@@ -1014,34 +1016,151 @@ public final class BookmarkHome {
 
             Data data = new Data();
             int[] budget = {MAX_NODES};
-            String[] rootMethods = {"g", "o", "q", "r"};
-            List<String> seen = new ArrayList<String>();
-            for (String rn : rootMethods) {
-                Object id;
-                try {
-                    id = XposedHelpers.callMethod(model, rn);
-                } catch (Throwable t) {
-                    continue;
-                }
-                if (id == null) continue;
-                String key = String.valueOf(id);
-                if (seen.contains(key)) continue;
-                seen.add(key);
-                Object item = XposedHelpers.callMethod(model, "j", id);
-                if (item == null) continue;
-                Node root = new Node();
-                root.folder = true;
-                root.title = stringField(item, "a", "书签");
-                Object children = XposedHelpers.callMethod(model, "l", id);
-                if (children instanceof ArrayList) {
-                    for (Object child : (ArrayList<?>) children) {
-                        addNode(model, childId(child), root.children, 0, budget);
+            /* Chrome 156 的 BookmarkBridge 有 10 个无参返回 BookmarkId 的根
+               getter（native 分派 ID 19~30）。旧代码只取 g/o/q/r，漏掉了
+               「其他书签」所在的根 —— 实测账号有 214 条书签只读到 188 条
+               （184 书签栏 + 4 移动设备，其他书签 25 条全丢）。
+               现在遍历全部 getter，再排除“父根”（children 里含其它根 id 的
+               root 节点），既补齐漏读又不会重复。 */
+            /* 主路径：直接走 native 分派 J.N.OJ(int id, long ptr)。
+               每个 Java 根 getter 的实现就是 OJ(ID, ptr)，ID 见 dex：
+               g=19 h=20 i=22 m=23 n=24 o=25 p=26 q=27 r=28 t=30。
+               直接调 OJ 可绕开 R8 把 getter 内联/降级导致反射取不到的问题
+               （实测账号「其他书签」的 t 就取不到，25 条书签全丢）。 */
+            List<Object> rootIds = new ArrayList<Object>();
+            Set<String> rootSeen = new HashSet<String>();
+            Class<?> jnCls = null;
+            try {
+                jnCls = Class.forName("J.N", false, cl);
+            } catch (Throwable ignored) {
+            }
+            if (jnCls != null) {
+                // 1) 本地根（native id 25~28）：记录下来用于排除
+                Set<String> localRoots = new HashSet<String>();
+                for (int rid : new int[]{25, 26, 27, 28}) {
+                    try {
+                        Object id = XposedHelpers.callStaticMethod(jnCls, "OJ",
+                                Integer.valueOf(rid), Long.valueOf(ptr));
+                        if (id != null) localRoots.add(String.valueOf(id));
+                    } catch (Throwable ignored) {
                     }
                 }
-                if (!root.children.isEmpty()) {
-                    data.roots.add(root);
-                    for (Node n : root.children) {
-                        if (n.folder) data.folders.add(n);
+                // 2) root 汇总节点（native id 30）的 children = 全部根。
+                //    排除本地根后即为「Google 账号书签」的所有根 —— 账号的
+                //    「其他书签」没有独立 getter（t 被 R8 内联），只能从
+                //    root.children 拿到，这是 25 条书签丢失的真正原因。
+                Object rootNode = null;
+                try {
+                    rootNode = XposedHelpers.callStaticMethod(jnCls, "OJ",
+                            Integer.valueOf(30), Long.valueOf(ptr));
+                } catch (Throwable ignored) {
+                }
+                if (rootNode != null) {
+                    Object children = XposedHelpers.callMethod(model, "l", rootNode);
+                    if (children instanceof ArrayList) {
+                        for (Object child : (ArrayList<?>) children) {
+                            Object cid = childId(child);
+                            if (cid == null) continue;
+                            String k = String.valueOf(cid);
+                            if (localRoots.contains(k)) continue;   // 跳过本地根
+                            if (!rootSeen.add(k)) continue;
+                            rootIds.add(cid);
+                            if (HookEntry.DEBUG) XposedBridge.log(HookEntry.TAG + ": bm acct root " + k);
+                        }
+                    }
+                }
+            }
+            // 回退：native 路径不可用时走 Java getter 枚举
+            String[] rootMethods = {"g", "h", "i", "m", "n", "o", "p", "q", "r", "t"};
+            if (rootIds.isEmpty()) {
+            for (String rn : rootMethods) {
+                Object id = null;
+                try {
+                    /* 精确匹配「无参 + 返回 BookmarkId」，并且递归父类用
+                       getDeclaredMethods —— R8 会把部分 getter 降为
+                       package-private（如账号「其他书签」的 t），
+                       getMethods() 拿不到，会造成整根书签丢失。 */
+                    java.lang.reflect.Method target = null;
+                    Class<?> cc = model.getClass();
+                    while (cc != null && target == null) {
+                        for (java.lang.reflect.Method mm : cc.getDeclaredMethods()) {
+                            if (mm.getName().equals(rn)
+                                    && mm.getParameterTypes().length == 0
+                                    && mm.getReturnType().getName().endsWith("BookmarkId")) {
+                                target = mm;
+                                break;
+                            }
+                        }
+                        cc = cc.getSuperclass();
+                    }
+                    if (target == null) {
+                        if (HookEntry.DEBUG) XposedBridge.log(HookEntry.TAG + ": bm root " + rn + " -> not found");
+                        continue;
+                    }
+                    target.setAccessible(true);
+                    id = target.invoke(model);
+                } catch (Throwable t) {
+                    if (HookEntry.DEBUG) XposedBridge.log(HookEntry.TAG + ": bm root " + rn + " -> err " + t);
+                    continue;
+                }
+                if (id == null) {
+                    if (HookEntry.DEBUG) XposedBridge.log(HookEntry.TAG + ": bm root " + rn + " -> null");
+                    continue;
+                }
+                if (!rootSeen.add(String.valueOf(id))) {
+                    if (HookEntry.DEBUG) XposedBridge.log(HookEntry.TAG + ": bm root " + rn + " -> dup " + id);
+                    continue;
+                }
+                rootIds.add(id);
+            }
+            }
+            // 父根识别: children 中出现另一个根 id 的，即为 root 汇总节点
+            Set<String> parentRoots = new HashSet<String>();
+            for (Object id : rootIds) {
+                try {
+                    Object children = XposedHelpers.callMethod(model, "l", id);
+                    if (children instanceof ArrayList) {
+                        for (Object child : (ArrayList<?>) children) {
+                            Object cid = childId(child);
+                            if (cid != null && rootSeen.contains(String.valueOf(cid))) {
+                                parentRoots.add(String.valueOf(id));
+                                break;
+                            }
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+            Set<String> nodeSeen = new HashSet<String>();
+            for (Object id : rootIds) {
+                if (parentRoots.contains(String.valueOf(id))) continue;  // 跳过 root 汇总节点
+                try {
+                    Object item = XposedHelpers.callMethod(model, "j", id);
+                    if (item == null) continue;
+                    Node root = new Node();
+                    root.folder = true;
+                    root.title = stringField(item, "a", "书签");
+                    Object children = XposedHelpers.callMethod(model, "l", id);
+                    if (HookEntry.DEBUG) {
+                        int childCnt = children instanceof ArrayList
+                                ? ((ArrayList<?>) children).size() : -1;
+                        XposedBridge.log(HookEntry.TAG + ": bm root id=" + id
+                                + " title=" + root.title + " children=" + childCnt);
+                    }
+                    if (children instanceof ArrayList) {
+                        for (Object child : (ArrayList<?>) children) {
+                            addNode(model, childId(child), root.children, 0, budget, nodeSeen);
+                        }
+                    }
+                    if (!root.children.isEmpty()) {
+                        data.roots.add(root);
+                        for (Node n : root.children) {
+                            if (n.folder) data.folders.add(n);
+                        }
+                    }
+                } catch (Throwable t) {
+                    if (HookEntry.DEBUG) {
+                        XposedBridge.log(HookEntry.TAG + ": bookmark root -> " + t);
                     }
                 }
             }
@@ -1053,8 +1172,10 @@ public final class BookmarkHome {
         }
     }
 
-    private static void addNode(Object model, Object id, List<Node> out, int depth, int[] budget) {
+    private static void addNode(Object model, Object id, List<Node> out, int depth,
+                                int[] budget, Set<String> seen) {
         if (id == null || depth > 5 || budget[0] <= 0) return;
+        if (seen != null && !seen.add(String.valueOf(id))) return;  // 已在其它根下收集过
         try {
             Object item = XposedHelpers.callMethod(model, "j", id);
             if (item == null) return;
@@ -1067,7 +1188,7 @@ public final class BookmarkHome {
             if (folder) {
                 if (children instanceof ArrayList) {
                     for (Object child : (ArrayList<?>) children) {
-                        addNode(model, childId(child), node.children, depth + 1, budget);
+                        addNode(model, childId(child), node.children, depth + 1, budget, seen);
                     }
                 }
                 if (node.children.isEmpty() && depth > 1) return;
