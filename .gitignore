@@ -25,3 +25,7 @@ work/
 
 # Release APK (作为 GitHub Release 附件, 不提交进 Git)
 ChroStar-*.apk
+
+# Python 缓存
+__pycache__/
+*.pyc

@@ -22,6 +22,29 @@
 - 当前 APK：`ChroStar-v2.5.2-chrome157.apk`
 - 安装：安装 APK → LSPosed 启用模块并勾选 **Google Chrome** → 强制停止 Chrome → 重新打开
 
+## Chrome 升版适配工具
+
+Chrome 每个大版本 R8 都会重排短名（156=`zor` / 157=`c0s` / 158=`vvr`），模块靠这些短名 hook，
+所以每次升版都要重新标定一张符号表。手写太慢也容易猜错，已把流程固化成脚本：
+
+```bash
+# 从手机拉三包 -> 按签名特征定位 -> 直接产出 Java 符号表
+python3 tools/chrome-symbols/chrome_symbols.py pull
+python3 tools/chrome-symbols/chrome_symbols.py scan \
+    --workdir work/chrome-symbols/<versionCode> --version 158 \
+    --emit-java module/app/src/main/java/io/github/ylw6669/chrostar/Chrome158.java
+
+# 崩溃栈里的混淆帧反查源码（模块自身 mapping.txt）
+python3 tools/chrome-symbols/chrome_symbols.py crash z.c
+```
+
+它不猜短名，而是按**签名特征**反查（例如 TabModelSelector = `(Z)->TabModel` + `()->TabModel`
+且被 `RecentlyClosedBridge` 构造器引用；ChromeTabCreator = 被 ChromeTabbedActivity 直接 invoke
+且首参 `LoadUrlParams` 的根包类）。输出同时给报告、`symbols.json`（跨版本 diff 用）和 Java 模板。
+
+完整流程、踩坑清单（native id 崩溃 / 面板不显示 / 冷启动开主页失败等）见
+[`tools/chrome-symbols/README.md`](tools/chrome-symbols/README.md)。
+
 ## v2.5.2 更新内容（适配 Chrome 157 稳定版）
 
 Chrome 157.0.8103.46 上指纹全部不匹配，模块所有业务 hook 都没装上（日志
