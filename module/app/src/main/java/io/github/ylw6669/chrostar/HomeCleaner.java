@@ -30,11 +30,13 @@ public final class HomeCleaner {
 
     private static String CLS_SELECTOR() {
         if (HookEntry.is158()) return Chrome158.SELECTOR;    // vvr
+        if (HookEntry.is157()) return Chrome157.SELECTOR;    // c0s
         if (HookEntry.is156()) return Chrome156.SELECTOR;    // zor
         return HookEntry.is152() ? "k3r" : "tuo";             // TabModelSelector(根包)
     }
     private static String CLS_HOME_MGR() {
         if (HookEntry.is158()) return "";                     // 158 改读 Chrome prefs
+        if (HookEntry.is157()) return Chrome157.HOME_MGR;     // rnc
         if (HookEntry.is156()) return Chrome156.HOME_MGR;     // sgc
         return HookEntry.is152() ? "w5c" : "jza";             // HomepageManager(根包)
     }
@@ -252,6 +254,10 @@ public final class HomeCleaner {
         if (HookEntry.is158()) {
             creatorCls = new String[]{Chrome158.TAB_CREATOR, Chrome158.TAB_CREATOR_INCOGNITO};
             creatorMethod = "m";
+        } else if (HookEntry.is157()) {
+            creatorCls = new String[]{Chrome157.TAB_CREATOR,
+                    Chrome157.TAB_CREATOR_INCOGNITO};
+            creatorMethod = "m";
         } else if (HookEntry.is156()) {
             creatorCls = new String[]{Chrome156.TAB_CREATOR}; // ju4
             creatorMethod = "m";
@@ -347,11 +353,10 @@ public final class HomeCleaner {
                         if (gurl == null) {
                             return;
                         }
-                        Object specObj = XposedHelpers.callMethod(gurl, "j");
-                        if (!(specObj instanceof String)) {
+                        String spec = gurlSpecOf(gurl);
+                        if (spec == null) {
                             return;
                         }
-                        String spec = (String) specObj;
                         if (!isNtp(spec)) {
                             return; // 不是 NTP(如 target=_blank 具体 URL), 不替换
                         }
@@ -463,7 +468,7 @@ public final class HomeCleaner {
             Class<?> jzaClass = Class.forName(CLS_HOME_MGR(), false, cl);
             Object singleton = XposedHelpers.callStaticMethod(jzaClass, "d");
             if (singleton != null) {
-                Object gurl = HookEntry.is156()
+                Object gurl = (HookEntry.is156() || HookEntry.is157())
                         ? XposedHelpers.callMethod(singleton, "b", Boolean.FALSE, Boolean.FALSE)
                         : XposedHelpers.callMethod(singleton, "b", Boolean.FALSE);
                 if (gurl != null) {
@@ -533,10 +538,13 @@ public final class HomeCleaner {
                 XposedBridge.log(HookEntry.TAG + ": 152 clearClosedTabs skipped (semantic channel changed)");
                 return;
             }
-            if (HookEntry.is158()) {
-                // 158: 直接构造 RecentlyClosedBridge 会在关闭标签后触发 native 崩溃
-                // (SIGSEGV in Chrome main thread), 暂不在冷启动路径清理"最近关闭"。
-                XposedBridge.log(HookEntry.TAG + ": [158] clearClosedTabs skipped (native bridge unsafe)");
+            if (HookEntry.is158() || HookEntry.is157()) {
+                // 158/157: RecentlyClosedBridge 的 native 通道(id)与 156 不同,
+                // 用 156 的 ZIJO(0,25)/VIJ(20) 会让 Chrome 主线程 SIGSEGV
+                // (实测 157: fault addr 0x9 in libchrome.so, 整进程崩溃)。
+                // 因此这两个版本都不在冷启动路径清理「最近关闭」。
+                XposedBridge.log(HookEntry.TAG + ": [" + HookEntry.engineVersion
+                        + "] clearClosedTabs skipped (native bridge unsafe)");
                 return;
             }
             Class<?> pmClass = Class.forName(CLS_PROFILE_MANAGER, false, cl);
@@ -700,7 +708,7 @@ public final class HomeCleaner {
     private static String currentTabUrl(Object selector) {
         try {
             Object tab = XposedHelpers.callMethod(selector,
-                    HookEntry.is158() ? "j" : "i");
+                    (HookEntry.is158() || HookEntry.is157()) ? "j" : "i");
             if (tab == null) {
                 return null;
             }
@@ -708,10 +716,7 @@ public final class HomeCleaner {
             if (gurl == null) {
                 return null;
             }
-            Object spec = HookEntry.isSplitModern()
-                    ? XposedHelpers.getObjectField(gurl, "a")
-                    : XposedHelpers.callMethod(gurl, "j");
-            return spec instanceof String ? (String) spec : null;
+            return gurlSpecOf(gurl);
         } catch (Throwable t) {
             return null;
         }
@@ -770,13 +775,10 @@ public final class HomeCleaner {
             if (gurl == null) {
                 return false;
             }
-            Object spec = HookEntry.isSplitModern()
-                    ? XposedHelpers.getObjectField(gurl, "a")
-                    : XposedHelpers.callMethod(gurl, "j");
-            if (!(spec instanceof String)) {
+            String url = gurlSpecOf(gurl);
+            if (url == null) {
                 return false;
             }
-            String url = (String) spec;
             if (url.equals(homeUrl)) {
                 return true;
             }
@@ -784,6 +786,23 @@ public final class HomeCleaner {
             return isNtp(homeUrl) && isNtp(url);
         } catch (Throwable t) {
             return false;
+        }
+    }
+
+    /** Tab.loadUrl(LoadUrlParams)：156=l / 157=m / 158=r(两参)，按候选依次试 */
+    static void loadUrlOnTab(Object tab, Object loadUrlParams) {
+        String[] oneArg = {"m", "l", "b", "r"};
+        for (String mn : oneArg) {
+            try {
+                XposedHelpers.callMethod(tab, mn, loadUrlParams);
+                return;
+            } catch (Throwable ignored) {
+            }
+        }
+        try {
+            XposedHelpers.callMethod(tab, "r", loadUrlParams, (String) null);
+        } catch (Throwable t) {
+            XposedBridge.log(HookEntry.TAG + ": loadUrlOnTab failed -> " + t);
         }
     }
 
@@ -798,7 +817,7 @@ public final class HomeCleaner {
             Class<?> gurlClass = Class.forName(CLS_GURL, false, cl);
             Object gurl = gurlClass.getConstructor(String.class).newInstance(url);
             Object tab = null;
-            if (HookEntry.is158()) {
+            if (HookEntry.is158() || HookEntry.is157()) {
                 // 158: openTabProgrammatically(GURL,int,int) — 第三参由 boolean 变 int index。
                 // 先用 -1(末尾), 失败退 0, 再失败就直接把主页 load 进现有标签。
                 try {
@@ -806,13 +825,15 @@ public final class HomeCleaner {
                             gurl, Integer.valueOf(2), Integer.valueOf(-1));
                 } catch (Throwable t1) {
                     XposedBridge.log(HookEntry.TAG
-                            + ": [158] openTabProgrammatically(-1) failed -> " + t1);
+                            + ": [" + HookEntry.engineVersion
+                            + "] openTabProgrammatically(-1) failed -> " + t1);
                     try {
                         tab = XposedHelpers.callMethod(model, "openTabProgrammatically",
                                 gurl, Integer.valueOf(2), Integer.valueOf(0));
                     } catch (Throwable t2) {
                         XposedBridge.log(HookEntry.TAG
-                                + ": [158] openTabProgrammatically(0) failed -> " + t2);
+                                + ": [" + HookEntry.engineVersion
+                                + "] openTabProgrammatically(0) failed -> " + t2);
                     }
                 }
                 if (tab == null && modelCount(model) > 0) {
@@ -822,10 +843,11 @@ public final class HomeCleaner {
                                 "org.chromium.content_public.browser.LoadUrlParams", false, cl)
                                 .getConstructor(String.class, int.class)
                                 .newInstance(url, Integer.valueOf(0));
-                        XposedHelpers.callMethod(existing, "r", lp, (String) null);
+                        loadUrlOnTab(existing, lp);
                         tab = existing;
                         XposedBridge.log(HookEntry.TAG
-                                + ": [158] fallback: load home into existing tab 0");
+                                + ": [" + HookEntry.engineVersion
+                                + "] fallback: load home into existing tab 0");
                     }
                 }
             } else if (HookEntry.is156()) {
@@ -893,6 +915,34 @@ public final class HomeCleaner {
             }
         } catch (Throwable t) {
             XposedBridge.log(HookEntry.TAG + ": findBySignature(" + returnType + ") failed -> " + t);
+        }
+        return null;
+    }
+
+    /**
+     * GURL -> URL 字符串。字段 a 是各版本都保留的 spec；方法名会被 R8 改
+     * （156/158=j()，157=e()/g()），所以字段优先 + 方法兜底，升级无需改这里。
+     */
+    static String gurlSpecOf(Object gurl) {
+        if (gurl == null) {
+            return null;
+        }
+        try {
+            Object v = XposedHelpers.getObjectField(gurl, "a");
+            if (v instanceof String) {
+                return (String) v;
+            }
+        } catch (Throwable ignored) {
+        }
+        String[] candidates = {"j", "g", "e", "getSpec"};
+        for (String mn : candidates) {
+            try {
+                Object v = XposedHelpers.callMethod(gurl, mn);
+                if (v instanceof String) {
+                    return (String) v;
+                }
+            } catch (Throwable ignored) {
+            }
         }
         return null;
     }

@@ -1,13 +1,17 @@
 # ChroStar
 
 [![Latest release](https://img.shields.io/github/v/release/Bcorw/ChroStar?label=release)](https://github.com/Bcorw/ChroStar/releases/latest)
-[![Chrome](https://img.shields.io/badge/Chrome-156%20%7C%20158-4285F4)](https://github.com/Bcorw/ChroStar/releases/latest)
+[![Chrome](https://img.shields.io/badge/Chrome-157%20stable%20%7C%20156%20%7C%20158%20beta-4285F4)](https://github.com/Bcorw/ChroStar/releases/latest)
 [![LSPosed](https://img.shields.io/badge/LSPosed-API%20102-3DDC84)](https://github.com/Bcorw/ChroStar/releases/latest)
 
 **LSPosed 模块**：让 Chrome 启动直开主页，并接管下载体验。
 
-当前版本 **v2.5.1**，实测适配 **Chrome 156.0.8078.79**，
-同时保留 Chrome 158 / 152 / 145 路径（158 为 v2.4.0 标定，未随本轮重测）。
+当前版本 **v2.5.2**，实测适配 **Chrome 157.0.8103.46（稳定版）**，
+同时保留 Chrome 156 / 158(beta) / 152 / 145 路径。
+
+> Chrome 每个大版本的 R8 短名都会重排，**156 / 157 / 158 三版必须各有一张符号表**
+> （`Chrome156.java` / `Chrome157.java` / `Chrome158.java`）。157 是稳定版，158 是 beta 分支，
+> 两者短名完全不同，不能复用。
 
 > 本仓库是 Chrome 156 适配分支，上游项目为 [ylw6669/ChroStar](https://github.com/ylw6669/ChroStar)
 > （基于上游 v2.2.1 继续开发）。
@@ -15,8 +19,54 @@
 ## 下载
 
 - **最新版本**：[Releases](https://github.com/Bcorw/ChroStar/releases/latest)
-- 当前 APK：`ChroStar-v2.5.1-chrome156.apk`
+- 当前 APK：`ChroStar-v2.5.2-chrome157.apk`
 - 安装：安装 APK → LSPosed 启用模块并勾选 **Google Chrome** → 强制停止 Chrome → 重新打开
+
+## v2.5.2 更新内容（适配 Chrome 157 稳定版）
+
+Chrome 157.0.8103.46 上指纹全部不匹配，模块所有业务 hook 都没装上（日志
+`neither Chrome156 nor Chrome158 fingerprint matched`）。
+
+### 新增 Chrome157 符号表（逆向实证，非猜测）
+
+对 `base.apk / split_chrome.apk / split_on_demand.apk` 三包做 DEX 结构分析，
+按**签名特征**定位（不是逐个猜短名）：
+
+| 用途 | 157 短名 | 定位依据 |
+|---|---|---|
+| TabModelSelector | `c0s` | 同时有 `l(Z)->TabModel`、`i()->TabModel`、`j()->Tab`，且被 RecentlyClosedBridge 构造器引用 |
+| HomepageManager | `rnc` | 静态 `d()` 单例 + `b(Z,Z)->GURL` |
+| ChromeTabCreator | `bv4` / 无痕 `iqm` | ChromeTabbedActivity 字节码直接 invoke 的 `m(LoadUrlParams,…)` 类 |
+| DownloadMessageUiController | `vk8` | `d(OfflineItem,Z,Z,Z)` |
+| MessageUiCoordinator | `y3h` | `b(PropertyModel,WebContents,I,Z)` + `c(PropertyModel,Z)` |
+
+OfflineItem 字段（`s0/k0/V/l0`）与 6 个下载弹窗 Bridge、`J.N` native 桥、
+`BookmarkBridge` 的 10 个根 getter、`BookmarkModel.z(Profile)` 在 157 未变。
+
+### 修掉的 3 个 157 专属崩溃/失效点
+
+1. **启动即崩（native SIGSEGV）**：`clearClosedTabs` 用 156 的 native 通道
+   `ZIJO(0,25)/VIJ(20)` 清「最近关闭」，157 上 id 变了 → Chrome 主线程
+   `SIGSEGV fault addr 0x9 in libchrome.so`，进程被杀、桌面闪回。
+   157/158 现在都跳过该通道（功能降级：不清「最近关闭」，其余不受影响）。
+2. **书签面板不显示**：`BookmarkHome.currentUrl()` 还在调 156 的 `selector.i()`
+   （157 的 `i()` 返回 TabModel 而非 Tab）→ 每帧异常返回 null → 面板永不出现。
+   改为 157/158 都用 `j()`。
+3. **冷启动「打开主页」失败**：`openHomeTab` 只用 156/158 两条分支，
+   157 落到 `findBySignature` 失败 → `open home failed`。157 现复用 158 的
+   多签名尝试（`openTabProgrammatically` int/boolean 各试一遍）。
+
+另外把 `Tab.loadUrl`、`GURL` 取字符串改成**候选方法名依次尝试**
+（156=`l`/157=`m`/158=`r`），下个版本改短名时这两处不用再改。
+
+### 真机验证（Xiaomi 13 / Android 17 / Chrome 157.0.8103.46）
+
+- `split ClassLoader acquired -> Chrome 157 fingerprint OK`，全部 hook 安装成功
+- 书签面板：**213 条**（Chrome 实际 183+25+5=213，逐条对齐），chips / 搜索 / 常用直达正常
+- 点击书签 → 正常打开（notion 实测），返回 NTP 面板恢复
+- 冷启动：3s+7s 两轮清理后 settled（1 tab），无崩溃
+- 下载：253KB zip 直下、无弹窗、无崩溃
+- 模块设置全部保留
 
 ## v2.5.1 更新内容（修复书签漏读：账号「其他书签」全部丢失）
 

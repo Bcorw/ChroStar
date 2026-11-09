@@ -171,14 +171,19 @@ public class HookEntry implements IXposedHookLoadPackage {
         return "chrome156".equals(engineVersion);
     }
 
-    /** Chrome 158: isolated splits + R8 短名重排(见 Chrome158.java) */
+    /** Chrome 158(beta): isolated splits + R8 短名重排(见 Chrome158.java) */
     public static boolean is158() {
         return "chrome158".equals(engineVersion);
     }
 
-    /** 156/158 共用同一套 isolated-split 运行时语义(仅符号表不同) */
+    /** Chrome 157(稳定版): isolated splits, 短名与 156/158 都不同(见 Chrome157.java) */
+    public static boolean is157() {
+        return "chrome157".equals(engineVersion);
+    }
+
+    /** 156/157/158 共用同一套 isolated-split 运行时语义(仅符号表不同) */
     public static boolean isSplitModern() {
-        return is156() || is158();
+        return is156() || is157() || is158();
     }
 
     public static boolean is152() {
@@ -332,9 +337,19 @@ public class HookEntry implements IXposedHookLoadPackage {
                 sSplitHooksInstalled = true;
                 return;
             }
+            if (Chrome157.matches(cl)) {
+                splitClassLoader = cl;
+                engineVersion = "chrome157";
+                XposedBridge.log(TAG + ": split ClassLoader acquired from " + source
+                        + " -> Chrome 157 fingerprint OK");
+                install157Hooks(cl);
+                sSplitHooksInstalled = true;
+                return;
+            }
             if (!Chrome156.matches(cl)) {
                 XposedBridge.log(TAG + ": split CL from " + source
-                        + " but neither Chrome156 nor Chrome158 fingerprint matched, skip");
+                        + " but no Chrome156/157/158 fingerprint matched, skip"
+                        + " (module v" + BuildConfig.VERSION_NAME + " 需要适配该版本)");
                 return;
             }
             splitClassLoader = cl;
@@ -375,6 +390,21 @@ public class HookEntry implements IXposedHookLoadPackage {
         LocationAndDiagnostics.noteHook("158 isolated-split hooks", true);
         XposedBridge.log(TAG + ": v" + BuildConfig.VERSION_NAME
                 + " hooks installed (158 isolated-split path)");
+    }
+
+    /** Chrome 157(稳定版): 与 156/158 同一套业务 hook, 符号表换 Chrome157 */
+    private static void install157Hooks(ClassLoader cl) {
+        hookTabModelMemory(cl);
+        hookOnStart(cl);
+        HomeCleaner.hookOpenNewTab(cl);
+        DownloadSafetyBypass.hook(cl);
+        AutoInstallApk.hook(cl);
+        BannerController.hook(cl);
+        LocationAndDiagnostics.hookLocationPrefSource(cl);
+        BookmarkHome.hook(cl);
+        LocationAndDiagnostics.noteHook("157 isolated-split hooks", true);
+        XposedBridge.log(TAG + ": v" + BuildConfig.VERSION_NAME
+                + " hooks installed (157 isolated-split path)");
     }
 
     /** 引擎版本判定 */

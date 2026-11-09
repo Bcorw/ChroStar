@@ -55,19 +55,27 @@ public final class BannerController {
     }
 
     private static String oiState() {
-        return is158() ? Chrome158.OI_STATE : Chrome156.OI_STATE;
+        if (is158()) return Chrome158.OI_STATE;
+        if (HookEntry.is157()) return Chrome157.OI_STATE;
+        return Chrome156.OI_STATE;
     }
 
     private static String oiPath() {
-        return is158() ? Chrome158.OI_PATH : Chrome156.OI_PATH;
+        if (is158()) return Chrome158.OI_PATH;
+        if (HookEntry.is157()) return Chrome157.OI_PATH;
+        return Chrome156.OI_PATH;
     }
 
     private static String oiTitle() {
-        return is158() ? Chrome158.OI_TITLE : Chrome156.OI_TITLE;
+        if (is158()) return Chrome158.OI_TITLE;
+        if (HookEntry.is157()) return Chrome157.OI_TITLE;
+        return Chrome156.OI_TITLE;
     }
 
     private static String oiMime() {
-        return is158() ? Chrome158.OI_MIME : Chrome156.OI_MIME;
+        if (is158()) return Chrome158.OI_MIME;
+        if (HookEntry.is157()) return Chrome157.OI_MIME;
+        return Chrome156.OI_MIME;
     }
 
     /** 安装 hook(主进程) */
@@ -159,8 +167,9 @@ public final class BannerController {
     private static void hookDownloadBanner(ClassLoader cl) {
         try {
             String clsName = is158() ? Chrome158.DOWNLOAD_MESSAGE
+                    : (HookEntry.is157() ? Chrome157.DOWNLOAD_MESSAGE
                     : (is156() ? Chrome156.DOWNLOAD_MESSAGE
-                    : (is152() ? CLS_JE7_152 : CLS_JE7));
+                    : (is152() ? CLS_JE7_152 : CLS_JE7)));
             Class<?> je7 = XposedHelpers.findClass(clsName, cl);
             Class<?> offlineItemCls = XposedHelpers.findClass(CLS_OFFLINE_ITEM,
                     cl);
@@ -186,7 +195,7 @@ public final class BannerController {
                                                 : (is152() ? "q0" : "m0"));
                                 if (HookEntry.DEBUG && is156() && state == 2) {
                                     XposedBridge.log(HookEntry.TAG + ": [156] vg8.d complete title="
-                                            + XposedHelpers.getObjectField(item, Chrome156.OI_TITLE));
+                                            + XposedHelpers.getObjectField(item, oiTitle()));
                                 }
                                 if (state != 2) {
                                     return; // 只处理完成态
@@ -265,8 +274,9 @@ public final class BannerController {
     private static void hookNzeC(ClassLoader cl) {
         try {
             String clsName = is158() ? Chrome158.MESSAGE_UI
+                    : (HookEntry.is157() ? Chrome157.MESSAGE_UI
                     : (is156() ? Chrome156.MESSAGE_UI
-                    : (is152() ? CLS_NZE_152 : CLS_NZE));
+                    : (is152() ? CLS_NZE_152 : CLS_NZE)));
             Class<?> nze = XposedHelpers.findClass(clsName, cl);
             Class<?> pmCls = XposedHelpers.findClass(
                     "org.chromium.ui.modelutil.PropertyModel", cl);
@@ -282,8 +292,9 @@ public final class BannerController {
     private static void hookNzeB(ClassLoader cl) {
         try {
             String clsName = is158() ? Chrome158.MESSAGE_UI
+                    : (HookEntry.is157() ? Chrome157.MESSAGE_UI
                     : (is156() ? Chrome156.MESSAGE_UI
-                    : (is152() ? CLS_NZE_152 : CLS_NZE));
+                    : (is152() ? CLS_NZE_152 : CLS_NZE)));
             Class<?> nze = XposedHelpers.findClass(clsName, cl);
             Class<?> pmCls = XposedHelpers.findClass(
                     "org.chromium.ui.modelutil.PropertyModel", cl);

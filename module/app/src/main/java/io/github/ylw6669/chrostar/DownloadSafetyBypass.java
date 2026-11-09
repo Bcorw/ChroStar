@@ -75,26 +75,31 @@ public final class DownloadSafetyBypass {
     // 156/158: dangerous allow 47 / deny 48, insecure 2, duplicate 1, policy allow 51 / deny 52, open 9
     private static int idDangerous()  {
         if (HookEntry.is158()) return Chrome158.ID_DANGEROUS_ALLOW;
+        if (HookEntry.is157()) return Chrome157.ID_DANGEROUS_ALLOW;
         if (HookEntry.is156()) return Chrome156.ID_DANGEROUS_ALLOW;
         return HookEntry.is152() ? 43 : 124;
     }
     private static int idInsecure()   {
         if (HookEntry.is158()) return Chrome158.ID_INSECURE;
+        if (HookEntry.is157()) return Chrome157.ID_INSECURE;
         if (HookEntry.is156()) return Chrome156.ID_INSECURE;
         return HookEntry.is152() ? 2 : 3;
     }
     private static int idDuplicate()  {
         if (HookEntry.is158()) return Chrome158.ID_DUPLICATE;
+        if (HookEntry.is157()) return Chrome157.ID_DUPLICATE;
         if (HookEntry.is156()) return Chrome156.ID_DUPLICATE;
         return HookEntry.is152() ? 1 : 2;
     }
     private static int idPolicy()     {
         if (HookEntry.is158()) return Chrome158.ID_POLICY_ALLOW;
+        if (HookEntry.is157()) return Chrome157.ID_POLICY_ALLOW;
         if (HookEntry.is156()) return Chrome156.ID_POLICY_ALLOW;
         return HookEntry.is152() ? 47 : 129;
     }
     private static int idOpen()       {
         if (HookEntry.is158()) return Chrome158.ID_OPEN_KEEP;
+        if (HookEntry.is157()) return Chrome157.ID_OPEN_KEEP;
         if (HookEntry.is156()) return Chrome156.ID_OPEN_KEEP;
         return HookEntry.is152() ? 9 : 15;
     }

@@ -716,10 +716,36 @@ public final class AutoInstallApk {
     // vg8 = DownloadMessageUiController; d(OfflineItem,boolean,boolean,boolean)
     // 完成态 OfflineItem.s0==2(COMPLETE); 字段 k0=file_path, V=title, l0=mime。
     // ------------------------------------------------------------------
+    /* OfflineItem 字段名按引擎分发（156/157 同名，158 另有一套） */
+    private static String oiStateField() {
+        if (HookEntry.is158()) return Chrome158.OI_STATE;
+        if (HookEntry.is157()) return Chrome157.OI_STATE;
+        return Chrome156.OI_STATE;
+    }
+
+    private static String oiPathField() {
+        if (HookEntry.is158()) return Chrome158.OI_PATH;
+        if (HookEntry.is157()) return Chrome157.OI_PATH;
+        return Chrome156.OI_PATH;
+    }
+
+    private static String oiTitleField() {
+        if (HookEntry.is158()) return Chrome158.OI_TITLE;
+        if (HookEntry.is157()) return Chrome157.OI_TITLE;
+        return Chrome156.OI_TITLE;
+    }
+
+    private static String oiMimeField() {
+        if (HookEntry.is158()) return Chrome158.OI_MIME;
+        if (HookEntry.is157()) return Chrome157.OI_MIME;
+        return Chrome156.OI_MIME;
+    }
+
     private static void hookDownloadMessage(ClassLoader cl) {
         try {
-            final String clsName = HookEntry.is158()
-                    ? Chrome158.DOWNLOAD_MESSAGE : Chrome156.DOWNLOAD_MESSAGE;
+            final String clsName = HookEntry.is158() ? Chrome158.DOWNLOAD_MESSAGE
+                    : (HookEntry.is157() ? Chrome157.DOWNLOAD_MESSAGE
+                    : Chrome156.DOWNLOAD_MESSAGE);
             Class<?> vg8 = XposedHelpers.findClass(clsName, cl);
             Class<?> offlineItemCls = XposedHelpers.findClass(CLS_OFFLINE_ITEM, cl);
             XposedHelpers.findAndHookMethod(vg8, "d", offlineItemCls,
@@ -734,15 +760,11 @@ public final class AutoInstallApk {
                                 }
                                 Object item = param.args[0];
                                 if (item == null) return;
-                                int state = XposedHelpers.getIntField(item,
-                                        HookEntry.is158() ? Chrome158.OI_STATE : Chrome156.OI_STATE);
-                                if (state != Chrome158.STATE_COMPLETE) return;
-                                String path = tryStringField(item, HookEntry.is158()
-                                        ? Chrome158.OI_PATH : Chrome156.OI_PATH);
-                                String title = tryStringField(item, HookEntry.is158()
-                                        ? Chrome158.OI_TITLE : Chrome156.OI_TITLE);
-                                String mime = tryStringField(item, HookEntry.is158()
-                                        ? Chrome158.OI_MIME : Chrome156.OI_MIME);
+                                int state = XposedHelpers.getIntField(item, oiStateField());
+                                if (state != Chrome157.STATE_COMPLETE) return;
+                                String path = tryStringField(item, oiPathField());
+                                String title = tryStringField(item, oiTitleField());
+                                String mime = tryStringField(item, oiMimeField());
                                 String name = (title != null && !title.isEmpty()) ? title
                                         : (path != null ? new File(path).getName() : null);
                                 if (!OverwriteAndAutoOpen.shouldAutoOpen(mime, name)
